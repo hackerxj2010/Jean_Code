@@ -1,0 +1,9 @@
+[package]
+name = "pi-voice"
+description = "Audio capture/playback, Opus codecs, live WebRTC streaming"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]

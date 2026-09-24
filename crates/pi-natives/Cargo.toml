@@ -1,0 +1,27 @@
+[package]
+name = "pi-natives"
+description = "N-API bindings aggregating the Rust core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pi-natives"
+path = "src/main.rs"
+
+[dependencies]
+hashline = { workspace = true }
+pi-walker = { workspace = true }
+pi-ast = { path = "../pi-ast" }
+pi-builtins = { path = "../pi-builtins" }
+pi-mnemopi = { path = "../pi-mnemopi" }
+pi-shell = { path = "../pi-shell" }
+brush-core = { path = "../brush-core" }
+pi-iso = { path = "../pi-iso" }
+snapcompact = { path = "../snapcompact" }
+pi-sys = { path = "../pi-sys" }
+pi-tokens = { path = "../pi-tokens" }
+pi-voice = { path = "../pi-voice" }
+pi-lsp = { path = "../pi-lsp" }
+pi-dap = { path = "../pi-dap" }

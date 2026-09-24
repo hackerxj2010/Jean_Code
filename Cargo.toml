@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hashline",
+    "crates/pi-walker",
+    "crates/pi-shell",
+    "crates/pi-ast",
+    "crates/pi-iso",
+    "crates/pi-voice",
+    "crates/brush-core",
+    "crates/pi-builtins",
+    "crates/snapcompact",
+    "crates/pi-mnemopi",
+    "crates/pi-natives",
+    "crates/pi-ffi",
+    "crates/pi-lsp",
+    "crates/pi-dap",
+    "crates/pi-sys",
+    "crates/pi-tokens",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/jean-code/jean-code"
+rust-version = "1.75"
+
+[workspace.dependencies]
+hashline = { path = "crates/hashline" }
+pi-walker = { path = "crates/pi-walker" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# The in-process library (`crates/pi-ffi`) is loaded into the Jean process
+# itself. A panic there has to unwind to the FFI boundary and come back as an
+# error; under `abort` it would take the whole agent down with it.
+[profile.ffi]
+inherits = "release"
+panic = "unwind"

@@ -1,0 +1,26 @@
+node_modules/
+dist/
+target/
+.turbo/
+*.tsbuildinfo
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Jean Code runtime state
+.jean/
+.jean-home/
+.scratch/
+
+# Native builds
+*.node
+
+.DS_Store
+.reference/
+
+# Local tool state
+.freebuff/
+.mimosa/
+nul

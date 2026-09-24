@@ -1,0 +1,10 @@
+[package]
+name = "pi-iso"
+description = "Task isolation via APFS clones, btrfs/zfs reflinks, overlayfs, projfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pi-builtins = { path = "../pi-builtins" }

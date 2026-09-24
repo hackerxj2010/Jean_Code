@@ -1,0 +1,10 @@
+[package]
+name = "pi-ast"
+description = "Tree-sitter based code summarizer (50+ grammars)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pi-builtins = { path = "../pi-builtins" }

@@ -1,0 +1,12 @@
+{
+  "name": "@jean/review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@jean/git": "workspace:*",
+    "@jean/security": "workspace:*",
+    "@jean/tools": "workspace:*"
+  }
+}

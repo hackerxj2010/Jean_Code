@@ -1,0 +1,12 @@
+{
+  "name": "@jean/lsp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@jean/config": "workspace:*",
+    "@jean/tools": "workspace:*",
+    "@jean/native": "workspace:*"
+  }
+}

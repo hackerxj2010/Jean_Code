@@ -1,0 +1,10 @@
+[package]
+name = "pi-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Language Server Protocol client: any language, installed on demand, every request an agent needs"
+
+[dependencies]
+pi-builtins = { path = "../pi-builtins" }

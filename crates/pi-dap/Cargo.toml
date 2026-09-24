@@ -1,0 +1,11 @@
+[package]
+name = "pi-dap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Debug Adapter Protocol client: every major debugger, over stdio or TCP, installed on demand"
+
+[dependencies]
+pi-lsp = { path = "../pi-lsp" }
+pi-sys = { path = "../pi-sys" }
