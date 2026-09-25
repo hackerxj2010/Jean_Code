@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -267,6 +267,45 @@ describe('permission gating', () => {
     )
     expect(result.isError).toBe(true)
     expect(result.output).toContain('non-interactive')
+  })
+})
+
+describe('safety boundaries', () => {
+  test('rules that cannot be checked do not let a call through', async () => {
+    const dir = workspace()
+    const broken = {
+      evaluate: () => {
+        throw new Error('bad rule')
+      },
+    }
+    const result = await registry().call('read', { path: 'a.txt' }, {
+      ...context(dir, { permissionMode: 'full' }),
+      policy: broken as never,
+    })
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('permission rules could not be checked')
+  })
+
+  test('a link inside the project cannot reach outside it', async () => {
+    const dir = workspace()
+    const outside = workspace()
+    writeFileSync(join(outside, 'secret.txt'), 'top secret')
+    symlinkSync(outside, join(dir, 'escape'))
+
+    const read = await registry().call('read', { path: 'escape/secret.txt' }, context(dir))
+    expect(read.isError).toBe(true)
+    expect(read.output).not.toContain('top secret')
+
+    const write = await registry().call('write', { path: 'escape/new.txt', content: 'x' }, context(dir))
+    expect(write.isError).toBe(true)
+  })
+
+  test('a link to a credentials file is treated as one', async () => {
+    const dir = workspace()
+    writeFileSync(join(dir, '.env'), 'API_KEY=live')
+    symlinkSync(join(dir, '.env'), join(dir, 'notes.txt'))
+    const result = await registry().call('read', { path: 'notes.txt' }, context(dir))
+    expect(result.output).not.toContain('API_KEY=live')
   })
 })
 

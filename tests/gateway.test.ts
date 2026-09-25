@@ -99,6 +99,30 @@ describe('identity linking', () => {
     expect(store.resolve('telegram', '999')).toBeUndefined()
   })
 
+  test('an account that keeps guessing is locked out, even from the right code', () => {
+    const store = new IdentityStore(storePath())
+    const identity = store.create('/projects/app')
+    const code = store.issueLinkCode(identity.id)
+    const wrong = code === '100000' ? '100001' : '100000'
+
+    for (let i = 0; i < 5; i++) expect(store.redeemLinkCode(wrong, 'telegram', 'attacker')).toBeUndefined()
+    expect(store.redeemLinkCode(code, 'telegram', 'attacker')).toBeUndefined()
+    // Someone else is not locked out by it.
+    expect(store.redeemLinkCode(code, 'telegram', 'owner')?.id).toBe(identity.id)
+  })
+
+  test('guessing from many accounts cancels every pending code', () => {
+    const store = new IdentityStore(storePath())
+    const identity = store.create('/projects/app')
+    const code = store.issueLinkCode(identity.id)
+    const wrong = code === '100000' ? '100001' : '100000'
+
+    for (let i = 0; i < 20; i++) store.redeemLinkCode(wrong, 'telegram', `bot-${i}`)
+    expect(store.redeemLinkCode(code, 'telegram', 'fresh-account')).toBeUndefined()
+    // A newly issued code works again.
+    expect(store.redeemLinkCode(store.issueLinkCode(identity.id), 'telegram', 'owner')?.id).toBe(identity.id)
+  })
+
   test('re-linking the same account does not duplicate it', () => {
     const store = new IdentityStore(storePath())
     const identity = store.create('/projects/app')

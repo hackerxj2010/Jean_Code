@@ -199,7 +199,9 @@ export function pathMatches(spec: string, target: string, cwd: string): boolean 
   }
 
   const full = normalize(base === '' ? pattern : resolveGlob(base, pattern))
-  const file = normalize(target)
+  // Resolved here too, not only in `pathOf`: a caller passing a raw path
+  // with `..` in it must not match differently from the file it names.
+  const file = normalize(resolve(target))
 
   if (!/[*?[]/.test(full)) {
     return caseFold(file) === caseFold(full) || caseFold(file).startsWith(`${caseFold(full)}/`)

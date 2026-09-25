@@ -115,6 +115,14 @@ describe('the policy', () => {
     expect(p.evaluate('bash', { command: 'git status' }, ctx)?.decision).toBe('allow')
   })
 
+  test('a path with `..` in it cannot step around a deny rule', () => {
+    const p = policy({ allow: ['Edit'], deny: ['Edit(src/**)'], ask: [] })
+    // Built as text: `join` would collapse the `..` and hide the problem.
+    const sneaky = `${ctx.cwd}/../proj/src/a.ts`
+    expect(p.evaluate('edit', { path: sneaky }, ctx)?.decision).toBe('deny')
+    expect(p.evaluate('edit', { path: 'lib/../src/a.ts' }, ctx)?.decision).toBe('deny')
+  })
+
   test('ask sits between deny and allow', () => {
     const p = policy({ allow: ['Edit'], deny: [], ask: ['Edit(package.json)'] })
     expect(p.evaluate('edit', { path: 'package.json' }, ctx)?.decision).toBe('ask')

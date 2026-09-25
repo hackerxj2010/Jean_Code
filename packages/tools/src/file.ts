@@ -1,4 +1,4 @@
-import { constants } from 'node:fs'
+import { constants, realpathSync } from 'node:fs'
 import { access, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { nativeReady } from '@jean/native'
@@ -44,14 +44,40 @@ const MAX_LINE_CHARS = 2000
  */
 export function resolveInWorkspace(path: string, context: ToolContext): string {
   const absolute = isAbsolute(path) ? path : resolve(context.cwd, path)
-  const rel = relative(context.cwd, absolute)
-  if (rel.startsWith(`..${sep}`) || rel === '..') {
+  const outside = (root: string, target: string): boolean => {
+    const rel = relative(root, target)
+    return rel.startsWith(`..${sep}`) || rel === '..' || isAbsolute(rel)
+  }
+  if (outside(context.cwd, absolute)) {
     throw new ToolError(
       `${path} is outside the project root (${context.cwd}).`,
       'Work inside the project, or ask the user to start Jean Code from the directory you need.',
     )
   }
+  // The check above is on the text of the path. A symlink inside the project
+  // (one `bash` call can plant it) can still point anywhere, so the real
+  // location has to be inside too.
+  if (outside(realPath(context.cwd), realPath(absolute))) {
+    throw new ToolError(
+      `${path} is a link to somewhere outside the project root (${context.cwd}).`,
+      'Work on the files inside the project, not through links that leave it.',
+    )
+  }
   return absolute
+}
+
+/**
+ * Where a path really is, following links. A path that does not exist yet (a
+ * file about to be written) resolves through its nearest existing parent.
+ */
+function realPath(path: string): string {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    const parent = dirname(path)
+    if (parent === path) return path
+    return join(realPath(parent), path.slice(parent.length).replace(/^[\\/]+/, ''))
+  }
 }
 
 export function displayPath(absolute: string, context: ToolContext): string {
@@ -82,7 +108,13 @@ const SECRET_FILES = [
 
 /** True when a path names a file that holds credentials. */
 export function isSecretFile(absolute: string): boolean {
-  const name = absolute.split(/[\\/]/).pop() ?? ''
+  // A link named `notes.txt` that points at `.env` is still `.env`: both the
+  // name used and the name of what it points to are checked.
+  return secretName(absolute) || secretName(realPath(absolute))
+}
+
+function secretName(path: string): boolean {
+  const name = path.split(/[\\/]/).pop() ?? ''
   // `.env.example` is a template of variable *names*, which is exactly what an
   // agent needs to see and carries no values.
   if (/^\.env\.(example|sample|template)$/i.test(name)) return false

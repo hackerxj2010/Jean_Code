@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 /**
  * Tool names across harnesses.
@@ -60,13 +60,19 @@ export function jeanName(name: string): string {
   return TO_JEAN[name] ?? name
 }
 
-/** The path a call operates on, if it has one, as an absolute path. */
+/**
+ * The path a call operates on, if it has one, as an absolute path.
+ *
+ * Always through `resolve`, which collapses `.` and `..`: path rules match
+ * this text, so `/proj/../proj/src/a.ts` must read as `/proj/src/a.ts` or it
+ * slips past `Edit(src/**)`.
+ */
 export function pathOf(input: unknown, cwd: string): string | undefined {
   if (input === null || typeof input !== 'object') return undefined
   const record = input as Record<string, unknown>
   const raw = record.path ?? record.file_path ?? record.notebook_path
   if (typeof raw !== 'string' || raw === '') return undefined
-  return isAbsolute(raw) ? raw : resolve(cwd, raw)
+  return resolve(cwd, raw)
 }
 
 /**

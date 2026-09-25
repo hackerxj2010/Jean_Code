@@ -185,6 +185,7 @@ export class Registry {
     // to stop a read. An ask rule is the user saying "check with me", so it
     // prompts even in `full`.
     let verdict: ReturnType<NonNullable<ToolContext['policy']>['evaluate']>
+    let rulesFailed: string | undefined
     try {
       // A bash rule is checked against every command the line would run, as
       // the `pi-shell` parser sees them — so quoting that the shell strips
@@ -195,8 +196,19 @@ export class Registry {
           ? { commands: await nativeCommandLines(command) }
           : undefined
       verdict = context.policy?.evaluate(tool.name, args, context, facts)
-    } catch {
-      verdict = undefined // a broken rule set must not wedge every call
+    } catch (error) {
+      // Rules that cannot be checked might have denied this call, so it is
+      // not allowed silently: the user is asked, and a non-interactive run
+      // refuses. Only the rule set can throw here — the native command
+      // parser returns undefined when it is unavailable.
+      verdict = undefined
+      rulesFailed = `permission rules could not be checked: ${error instanceof Error ? error.message : String(error)}`
+    }
+    if (rulesFailed) {
+      if (mode === 'plan' && tool.risk !== 'read') {
+        return { allowed: false, reason: `Plan mode is read-only, so \`${tool.name}\` did not run.` }
+      }
+      return this.confirm(tool, args, context, rulesFailed)
     }
     if (verdict?.decision === 'deny') {
       return {

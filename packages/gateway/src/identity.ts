@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { randomBytes, randomInt } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
@@ -46,6 +46,16 @@ interface PendingLink {
 
 /** Codes are short-lived: a link code is a bearer credential for a session. */
 const LINK_TTL_MS = 10 * 60 * 1000
+/**
+ * Wrong codes one account may try per window before it is locked out.
+ * Six digits is a million codes; five guesses is a one-in-200,000 chance.
+ */
+const MAX_FAILURES_PER_ACCOUNT = 5
+/**
+ * Wrong codes from everyone per window before every pending code is
+ * cancelled — an attacker rotating account ids gets no more than this.
+ */
+const MAX_FAILURES_TOTAL = 20
 
 export class IdentityStore {
   private readonly path: string
@@ -53,6 +63,9 @@ export class IdentityStore {
   /** Index from `platform:accountId` to identity id. */
   private readonly index = new Map<string, string>()
   private pending = new Map<string, PendingLink>()
+  /** Failed redemptions per platform account, and overall, in the current window. */
+  private failures = new Map<string, { count: number; resetAt: number }>()
+  private totalFailures = { count: 0, resetAt: 0 }
 
   constructor(path: string) {
     this.path = path
@@ -98,7 +111,7 @@ export class IdentityStore {
   /** Creates a local identity, as the terminal side of a link. */
   create(cwd: string): Identity {
     const identity: Identity = {
-      id: createHash('sha256').update(`${cwd}:${Date.now()}:${Math.random()}`).digest('hex').slice(0, 16),
+      id: randomBytes(8).toString('hex'),
       accounts: [],
       cwd,
       createdAt: Date.now(),
@@ -122,7 +135,8 @@ export class IdentityStore {
     }
 
     this.expirePending()
-    const code = String(Math.floor(100_000 + Math.random() * 900_000))
+    // A CSPRNG: `Math.random()` is predictable from its earlier outputs.
+    const code = String(randomInt(100_000, 1_000_000))
     this.pending.set(code, { code, identityId, expiresAt: Date.now() + LINK_TTL_MS })
     return code
   }
@@ -141,9 +155,20 @@ export class IdentityStore {
   ): Identity | undefined {
     this.expirePending()
 
+    // A locked-out account is refused even with the right code, or the
+    // lockout would only slow a guesser down rather than stop them.
+    const account = key(platform, accountId)
+    const now = Date.now()
+    const record = this.failures.get(account)
+    if (record && record.resetAt > now && record.count >= MAX_FAILURES_PER_ACCOUNT) return undefined
+
     const link = this.pending.get(code)
-    if (!link) return undefined
+    if (!link) {
+      this.recordFailure(account, now)
+      return undefined
+    }
     this.pending.delete(code)
+    this.failures.delete(account)
 
     const identity = this.identities.get(link.identityId)
     if (!identity) return undefined
@@ -163,6 +188,17 @@ export class IdentityStore {
     identity.lastSeenAt = Date.now()
     this.save()
     return identity
+  }
+
+  /** Counts a wrong code; past the overall limit, every pending code dies. */
+  private recordFailure(account: string, now: number): void {
+    const record = this.failures.get(account)
+    if (record && record.resetAt > now) record.count++
+    else this.failures.set(account, { count: 1, resetAt: now + LINK_TTL_MS })
+
+    if (this.totalFailures.resetAt <= now) this.totalFailures = { count: 0, resetAt: now + LINK_TTL_MS }
+    this.totalFailures.count++
+    if (this.totalFailures.count >= MAX_FAILURES_TOTAL) this.pending.clear()
   }
 
   /** Removes a platform account from whichever identity holds it. */
