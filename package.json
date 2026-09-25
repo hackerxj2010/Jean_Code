@@ -11,6 +11,7 @@
     "dev": "bun --cwd packages/cli dev",
     "jean": "bun packages/cli/src/index.ts",
     "build": "tsc --build",
+    "release:build": "bun scripts/release/build.ts",
     "build:native": "cargo build --release -p pi-natives && cargo build --profile ffi -p pi-ffi",
     "typecheck": "tsc --build",
     "test": "bun test",

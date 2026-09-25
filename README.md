@@ -39,14 +39,34 @@ All of the above has been run against live models, not just mocks — see [docs/
 
 ## Install
 
-One command installs everything — Bun and Rust if they are missing, the dependencies, the native core, the debuggers, and the common language servers — and puts `jean` on your PATH:
+With npm — a single prebuilt program for your platform, nothing else needed:
 
 ```bash
-./install.sh            # macOS, Linux, Git Bash
+npm install -g jean-code
+```
+
+Or without npm:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hackerxj2010/Jean_Code/main/install.sh | sh     # macOS, Linux
 ```
 
 ```powershell
-.\install.ps1          # Windows PowerShell
+irm https://raw.githubusercontent.com/hackerxj2010/Jean_Code/main/install.ps1 | iex        # Windows
+```
+
+Then run `jean` in any project. Prebuilt versions exist for Linux, macOS, and Windows, on x64 and ARM. Update with `npm install -g jean-code@latest`, or by running the installer again; `jean upgrade` says which.
+
+### From source
+
+From a checkout, the same installers build that checkout instead — installing Bun and Rust if they are missing, the dependencies, the native core, the debuggers, and the common language servers — and put `jean` on your PATH:
+
+```bash
+./install.sh            # macOS, Linux, Git Bash    (the one-liner with --source does the same)
+```
+
+```powershell
+.\install.ps1          # Windows PowerShell         (-Source)
 ```
 
 `--all` (`-All`) installs every debugger and language server that installs itself, not only those for the languages on your machine. `jean setup check` shows what is there and what is missing; `jean setup` installs it.
