@@ -57,8 +57,13 @@ fn shell_inspect_sees_every_command_and_the_constructs_it_cannot_run() {
     assert_eq!(lines, vec!["cd build", "rm -rf dist", "tee log"]);
     assert_eq!(field(&result, "needsSystemShell"), &Json::Null);
 
-    let looped = call(&mut state, "shell.inspect", r#"{"command":"for f in *; do echo $f; done"}"#);
-    assert!(text(&looped, "needsSystemShell").contains("for"));
+    // A loop is run here, and what it runs is seen; arrays are not.
+    let looped = call(&mut state, "shell.inspect", r#"{"command":"for f in *; do rm $f; done"}"#);
+    assert_eq!(field(&looped, "needsSystemShell"), &Json::Null);
+    let Json::Array(inside) = field(&looped, "commands") else { panic!() };
+    assert_eq!(inside.iter().map(|c| text(c, "line")).collect::<Vec<_>>(), vec!["rm $f"]);
+    let arrays = call(&mut state, "shell.inspect", r#"{"command":"files=(a b)"}"#);
+    assert!(text(&arrays, "needsSystemShell").contains("arrays"));
 }
 
 #[test]
@@ -74,8 +79,14 @@ fn a_shell_session_keeps_its_variables_and_directory_between_calls() {
     assert_eq!(text(&echoed, "stdout").trim(), "hello");
     assert!(text(&echoed, "cwd").ends_with("sub"), "{}", text(&echoed, "cwd"));
 
-    // A loop is refused rather than half-run.
-    call_err(&mut state, "shell.run", &format!(r#"{{"session":"{id}","command":"while true; do echo; done"}}"#));
+    // Loops and functions run; what the shell cannot run is refused rather
+    // than half-run.
+    let looped = call(&mut state, "shell.run", &format!(r#"{{"session":"{id}","command":"for i in 1 2 3; do echo $i; done"}}"#));
+    assert_eq!(text(&looped, "stdout"), "1
+2
+3
+");
+    call_err(&mut state, "shell.run", &format!(r#"{{"session":"{id}","command":"files=(a b c)"}}"#));
 
     assert_eq!(call(&mut state, "shell.close", &format!(r#"{{"session":"{id}"}}"#)), Json::Bool(true));
     std::fs::remove_dir_all(&root).ok();

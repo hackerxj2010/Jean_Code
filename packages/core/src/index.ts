@@ -27,7 +27,7 @@ export {
 } from './compaction.ts'
 export type { CompactionResult } from './compaction.ts'
 export { Freshness } from './freshness.ts'
-export { FileHistory, type RewindResult } from './history.ts'
+export { FileHistory, type RedoResult, type RewindResult } from './history.ts'
 export { partition, RepeatTracker, runLoop, stableStringify, textOf } from './loop.ts'
 export type {
   AfterToolDecision,
@@ -46,11 +46,18 @@ export {
 } from './prompt.ts'
 export type { InstructionFile, PromptParts } from './prompt.ts'
 export {
+  deleteSession,
+  exportSession,
+  forkSession,
+  importSession,
   latestSession,
   listSessions,
   loadSession,
   newSessionId,
+  renameSession,
+  sanitizeEvents,
   saveSession,
+  sessionMarkdown,
   sessionPath,
 } from './session.ts'
-export type { SessionMeta } from './session.ts'
+export type { SessionExport, SessionMeta } from './session.ts'

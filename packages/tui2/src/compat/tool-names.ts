@@ -129,6 +129,11 @@ export function adaptOutput(
             stdout: text,
             stderr: '',
             ...(typed.isError === true && { errorMessage: text }),
+            // How it ended, for the box's status: an exit code, or a timeout.
+            ...(isRecord(typed.display) && 'exitCode' in typed.display
+              ? { exitCode: typed.display.exitCode as number | null }
+              : {}),
+            ...(isRecord(typed.display) && typed.display.timedOut === true ? { timedOut: true } : {}),
             ...(isRecord(typed.display) && typeof typed.display.cwd === 'string'
               ? { startingCwd: typed.display.cwd }
               : {}),

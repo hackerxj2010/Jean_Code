@@ -44,6 +44,7 @@ export const ToolBranch = memo(
       indentationOffset: 0,
       previewPrefix: '',
       labelWidth: 0,
+      onToggle: handleToggle,
     })
     if (override) {
       return <box key={keyPrefix}>{override.content}</box>

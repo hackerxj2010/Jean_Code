@@ -9,6 +9,39 @@ use pi_builtins::Output;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// A stream being read line by line, without copying what is left of it
+/// each time.
+#[derive(Debug, Clone, Default)]
+pub struct Input {
+    text: String,
+    offset: usize,
+}
+
+impl Input {
+    pub fn new(text: String) -> Self {
+        Input { text, offset: 0 }
+    }
+
+    /// What has not been read yet.
+    pub fn remaining(&self) -> &str {
+        &self.text[self.offset..]
+    }
+
+    /// The next line, without its newline; `None` at the end.
+    pub fn line(&mut self) -> Option<String> {
+        if self.offset >= self.text.len() {
+            return None;
+        }
+        let rest = &self.text[self.offset..];
+        let (line, used) = match rest.find('\n') {
+            Some(end) => (&rest[..end], end + 1),
+            None => (rest, rest.len()),
+        };
+        self.offset += used;
+        Some(line.trim_end_matches('\r').to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     pub cwd: PathBuf,
@@ -20,6 +53,29 @@ pub struct Session {
     /// Set when `exit` ran, with the code it asked for.
     pub exited: Option<i32>,
     pub policy: Policy,
+    /// Functions defined in this session, by name.
+    pub functions: HashMap<String, crate::parser::Node>,
+    /// What is left of the input redirected into the compound command that
+    /// is running — `while read line; do ...; done < file` — which each
+    /// `read` takes a line from.
+    pub input: Option<Input>,
+    /// `set -e`: a failing command ends the script.
+    pub errexit: bool,
+    /// `set -o pipefail`: a pipeline fails when any stage does.
+    pub pipefail: bool,
+    /// Above zero inside a condition — an `if` or `while` test, the left of
+    /// `&&` or `||`, a `!` — where `set -e` does not apply.
+    pub condition_depth: usize,
+    /// For each running function, the variables it made `local` and their
+    /// values before, to put back when it returns.
+    pub locals: Vec<Vec<(String, Option<String>)>>,
+    /// How deep function calls are nested.
+    pub call_depth: usize,
+    /// How long one script may run its loops before they are stopped: a
+    /// `while true` with no way out must not hang the process that runs it.
+    pub time_limit: std::time::Duration,
+    /// When the running script's time is up.
+    pub deadline: Option<std::time::Instant>,
     /// Directories `cd -` walks back through.
     history: Vec<PathBuf>,
 }
@@ -46,6 +102,15 @@ impl Session {
             last_status: 0,
             exited: None,
             policy: Policy::default(),
+            functions: HashMap::new(),
+            input: None,
+            errexit: false,
+            pipefail: false,
+            condition_depth: 0,
+            locals: Vec::new(),
+            call_depth: 0,
+            time_limit: std::time::Duration::from_secs(120),
+            deadline: None,
             history: Vec::new(),
         }
     }

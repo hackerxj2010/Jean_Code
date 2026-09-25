@@ -43,7 +43,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -120,6 +120,8 @@ export const NATIVE_METHODS = [
   'tokens.count',
   'voice.probe',
   'voice.prepare',
+  'voice.record',
+  'voice.recorders',
   // pi-lsp
   'lsp.configure',
   'lsp.diagnostics',
@@ -682,6 +684,8 @@ export interface KillReport {
 }
 
 export interface AudioProbe {
+  /** `wav`, `flac`, `aiff`, `au` — or `ffmpeg` for what it decoded. */
+  format: string
   channels: number
   sampleRate: number
   bitsPerSample: number
@@ -961,6 +965,29 @@ export class Native {
     return (await this.bridge.call('voice.probe', { path })) as AudioProbe
   }
 
+  /**
+   * Records from the microphone — through `parecord`, `arecord`, `sox`, or
+   * `ffmpeg`, whichever the machine has — until the speaker finishes or
+   * `maxMs` passes, and writes a 16 kHz mono WAV to `output`.
+   */
+  async voiceRecord(
+    output: string,
+    options: { maxMs?: number; waitMs?: number; untilSilence?: boolean } = {},
+  ): Promise<{ output: string; durationMs: number; recorder: string; heardSpeech: boolean }> {
+    const limit = (options.maxMs ?? 60_000) + 30_000
+    return (await this.bridge.call('voice.record', { output, ...options }, limit)) as {
+      output: string
+      durationMs: number
+      recorder: string
+      heardSpeech: boolean
+    }
+  }
+
+  /** The microphone recorders this machine has, most suitable first. */
+  async voiceRecorders(): Promise<{ name: string; program: string }[]> {
+    return (await this.bridge.call('voice.recorders', {})) as { name: string; program: string }[]
+  }
+
   /** Mono, 16 kHz, silence trimmed — what speech-to-text wants. */
   async voicePrepare(path: string, output: string): Promise<{ output: string; durationMs: number; sampleRate: number }> {
     return (await this.bridge.call('voice.prepare', { path, output }, 120_000)) as {
@@ -1072,8 +1099,8 @@ export async function nativeStatus(): Promise<NativeStatus> {
   }
 
   // Stale means a crate linked into the artifact changed after it was built.
-  // `pi-ffi` is not part of the binary, and `pi-lsp`/`pi-dap` are outside the
-  // workspace, so neither can make it out of date.
+  // Every crate is linked into both — `pi-lsp` and `pi-dap` through
+  // `pi-natives` — except `pi-ffi`, which is only the library.
   const root = packageRoot()
   if (root && binary.startsWith(root)) {
     const crates = join(root, 'crates')
@@ -1081,14 +1108,69 @@ export async function nativeStatus(): Promise<NativeStatus> {
       readdirSync(crates, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && !exclude.includes(entry.name))
         .reduce((newest, entry) => Math.max(newest, newestSource(join(crates, entry.name))), 0)
-    const outside = ['pi-lsp', 'pi-dap']
-    status.stale = linked([...outside, 'pi-ffi']) > statSync(binary).mtimeMs
+    status.stale = linked(['pi-ffi']) > statSync(binary).mtimeMs
     if (status.library?.startsWith(root)) {
-      status.stale ||= linked(outside) > statSync(status.library).mtimeMs
+      status.stale ||= linked([]) > statSync(status.library).mtimeMs
     }
   }
   return status
 }
+
+/**
+ * A directory of commands, one per Rust coreutil, that run it through
+ * `pi-natives --builtin` — for the system shell's PATH.
+ *
+ * Appended to PATH, never prepended: an installed `grep` or `jq` always wins,
+ * and a shell that lacks one — Git Bash has no `jq` or `bc`, macOS no `jq` —
+ * gets Jean's instead of "command not found". Each is a `sh` script, plus a
+ * `.cmd` beside it on Windows for `cmd` and PowerShell. Written once per
+ * build of the binary, so a rebuild is picked up and nothing is rewritten on
+ * every call. `undefined` without the Rust core, or with
+ * `JEAN_NO_COREUTILS=1`.
+ */
+export function coreutilsShimDir(names: readonly string[] = COREUTILS): string | undefined {
+  if (process.env.JEAN_NO_COREUTILS === '1') return undefined
+  const binary = findBinary()
+  if (!binary) return undefined
+  let stamp: number
+  try {
+    stamp = Math.round(statSync(binary).mtimeMs)
+  } catch {
+    return undefined
+  }
+  const home = process.env.JEAN_HOME ?? join(homedir(), '.jean')
+  const dir = join(home, 'coreutils', `${stamp.toString(36)}-${names.length}`)
+  const done = join(dir, '.complete')
+  if (existsSync(done)) return dir
+  try {
+    mkdirSync(dir, { recursive: true })
+    const posix = binary.replace(/\\/g, '/')
+    for (const name of names) {
+      const script = join(dir, name)
+      writeFileSync(script, `#!/bin/sh\nexec "${posix}" --builtin ${name} "$@"\n`)
+      if (process.platform === 'win32') writeFileSync(`${script}.cmd`, `@"${binary}" --builtin ${name} %*\r\n`)
+      else chmodSync(script, 0o755)
+    }
+    writeFileSync(done, `${binary}\n`)
+    return dir
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The coreutils `pi-natives --builtin` runs, as `pi-builtins` lists them.
+ * Kept here so the shims need no bridge call; `tests/native-wiring.test.ts`
+ * checks it against the binary's own list.
+ */
+export const COREUTILS = [
+  'ls', 'cat', 'cp', 'mv', 'rm', 'mkdir', 'touch', 'chmod', 'chown', 'stat', 'file', 'wc',
+  'head', 'tail', 'sort', 'uniq', 'diff', 'patch', 'sed', 'awk', 'grep', 'tr', 'cut', 'paste',
+  'join', 'comm', 'fold', 'fmt', 'expand', 'unexpand', 'pr', 'column', 'jq', 'xargs', 'find',
+  'basename', 'dirname', 'readlink', 'realpath', 'mktemp', 'shuf', 'seq', 'bc', 'date', 'env',
+  'printenv', 'tee', 'yes', 'echo', 'pwd', 'test', 'true', 'false', 'sleep', 'cksum', 'md5sum',
+  'sha256sum', 'nl',
+] as const
 
 /**
  * Builds the release binary with cargo, from the checkout this package is in.

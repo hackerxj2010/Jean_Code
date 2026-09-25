@@ -236,14 +236,17 @@ export async function routeUserPrompt(
 
   // Handle bash mode commands
   if (inputMode === 'bash') {
-    const commandWithBang = '!' + trimmed
-    saveToHistory(commandWithBang)
+    // A pasted `!command` switches to bash mode with its `!` still in the
+    // text; the `!` means "run this", not part of the command.
+    const command = trimmed.startsWith('!') ? trimmed.slice(1).trimStart() : trimmed
+    if (!command) return
+    saveToHistory('!' + command)
     setInputValue({ text: '', cursorPosition: 0, lastEditDueToNav: false })
     setInputMode('default')
     setInputFocused(true)
     inputRef.current?.focus()
 
-    runBashCommand(trimmed)
+    runBashCommand(command)
     return
   }
 

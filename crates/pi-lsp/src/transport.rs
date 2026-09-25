@@ -69,12 +69,31 @@ pub fn write_message<W: Write + ?Sized>(writer: &mut W, body: &str) -> io::Resul
 #[derive(Clone, Default)]
 pub struct StderrTail {
     lines: Arc<Mutex<VecDeque<String>>>,
+    forward: Arc<Mutex<Option<Sink>>>,
 }
+
+/// Where a tail also sends each line, with the stream it came from.
+type Sink = Box<dyn Fn(&str, &str) + Send>;
 
 impl StderrTail {
     const KEEP: usize = 200;
 
-    fn push(&self, line: String) {
+    /// Hands every line read from now on to `sink` too, with its stream
+    /// (`stdout` or `stderr`). A debug adapter reached over TCP leaves its
+    /// stdio to the program it runs — CodeLLDB and Delve do — so what it
+    /// prints there once the session is up is the program's output.
+    pub fn forward(&self, sink: impl Fn(&str, &str) + Send + 'static) {
+        if let Ok(mut forward) = self.forward.lock() {
+            *forward = Some(Box::new(sink));
+        }
+    }
+
+    fn push(&self, stream: &str, line: String) {
+        if let Ok(forward) = self.forward.lock() {
+            if let Some(sink) = forward.as_ref() {
+                sink(stream, &line);
+            }
+        }
         if let Ok(mut lines) = self.lines.lock() {
             if lines.len() == Self::KEEP {
                 lines.pop_front();
@@ -136,10 +155,14 @@ fn command_for(program: &[String], cwd: &Path, env: &[(String, String)]) -> io::
 }
 
 fn drain_stderr(stderr: impl Read + Send + 'static, tail: StderrTail) {
+    drain(stderr, tail, "stderr");
+}
+
+fn drain(stream: impl Read + Send + 'static, tail: StderrTail, name: &'static str) {
     thread::spawn(move || {
-        let reader = BufReader::new(stderr);
+        let reader = BufReader::new(stream);
         for line in reader.split(b'\n').map_while(Result::ok) {
-            tail.push(String::from_utf8_lossy(&line).trim_end().to_string());
+            tail.push(name, String::from_utf8_lossy(&line).trim_end().to_string());
         }
     });
 }
@@ -205,7 +228,7 @@ impl Wire {
         // The adapter's own stdout is not the protocol here; it is log output,
         // and an unread pipe would block the adapter once it fills.
         if let Some(stdout) = child.stdout.take() {
-            drain_stderr(stdout, tail.clone());
+            drain(stdout, tail.clone(), "stdout");
         }
 
         let started = Instant::now();

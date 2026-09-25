@@ -35,6 +35,12 @@ export interface ToolContext {
   confirm?: (request: ConfirmRequest) => Promise<boolean>
   /** Progress for long-running tools, surfaced in the TUI. */
   onProgress?: (message: string) => void
+  /**
+   * The id of the call being run — what a tool that reports work of its own
+   * (`spawn`) files that work under, so the interface can show it inside the
+   * right call.
+   */
+  callId?: string
   /** Per-session scratch shared across tool calls (shell cwd, env, job table). */
   session: SessionState
   /**

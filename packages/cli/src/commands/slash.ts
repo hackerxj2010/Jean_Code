@@ -3,7 +3,7 @@ import { compact, listSessions } from '@jean/core'
 import { describeKeywords, type Orchestrator } from '@jean/agent'
 import { describeCommands } from '@jean/commands'
 import { trustProject } from '@jean/hooks'
-import { allModels, estimateCost, type ModelClient } from '@jean/model'
+import { estimateCost, type ModelClient } from '@jean/model'
 import { nativeReady } from '@jean/native'
 import { color, line, symbols } from '../ui.ts'
 import { printNativeReport } from './native.ts'
@@ -76,26 +76,18 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         return
       }
       // Session-scoped: the config file is not rewritten by a slash command.
-      context.orchestrator.config.agents.default.model = args[0]
-      context.orchestrator.config.model.modelId = args[0]!
-      line(`${symbols.check} Model set to ${color.cyan(args[0]!)} for this session.`)
-      line(color.dim('  Use `jean config set agents.default.model <id>` to make it permanent.'))
+      const chosen = context.orchestrator.setModel(args[0]!)
+      line(`${symbols.check} Model set to ${color.cyan(`${chosen.provider}:${chosen.modelId}`)} for this session.`)
+      line(color.dim('  Use `jean config set agents.default.model <provider:model>` to make it permanent.'))
     },
   },
   {
     name: 'models',
-    description: 'List models in the catalog',
-    run() {
-      line()
-      for (const model of allModels()) {
-        const window = `${Math.round(model.contextWindow / 1000)}k`
-        const price =
-          model.inputCost !== undefined ? `$${model.inputCost}/$${model.outputCost} per Mtok` : ''
-        line(
-          `  ${color.cyan(model.id.padEnd(34))} ${window.padStart(6)} ${color.dim(price)}`,
-        )
-      }
-      line()
+    args: '[provider] [text]',
+    description: 'Models of the connected providers (or of one): context, price, abilities',
+    async run(args, context) {
+      const { runModelsCommand } = await import('./providers.ts')
+      await runModelsCommand(args, context.orchestrator.config, {})
     },
   },
   {
@@ -135,7 +127,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     run(_, context) {
       const usage = context.orchestrator.store.usage()
       const resolved = context.client.resolve('default')
-      const spent = estimateCost(resolved.modelId, usage.inputTokens, usage.outputTokens)
+      const spent = estimateCost(resolved.modelId, usage.inputTokens, usage.outputTokens, resolved.provider)
       const files = context.orchestrator.store.touchedFiles()
 
       line()
@@ -353,6 +345,51 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Same as /rewind 1',
     run(_, context) {
       return SLASH_COMMANDS.find((c) => c.name === 'rewind')!.run([], context)
+    },
+  },
+  {
+    name: 'redo',
+    description: 'Take back the last /undo: files and conversation',
+    run(_, context) {
+      const result = context.orchestrator.redo()
+      if (!result) {
+        line('  Nothing to redo — /undo first; a new prompt clears what could be redone.')
+        return
+      }
+      line(`${symbols.check} Redid ${result.turns} turn${result.turns === 1 ? '' : 's'}.`)
+      for (const path of result.restored) line(color.dim(`  restored ${path}`))
+      for (const path of result.removed) line(color.dim(`  removed ${path}`))
+    },
+  },
+  {
+    name: 'export',
+    args: '[sanitize]',
+    description: 'Save this session as Markdown and JSON in .jean/exports',
+    async run(args, context) {
+      const sanitize = args.includes('sanitize')
+      const doc = context.orchestrator.exportTranscript({ sanitize })
+      if (!doc) {
+        line('  Nothing to export yet.')
+        return
+      }
+      const { mkdirSync, writeFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const { sessionMarkdown } = await import('@jean/core')
+      const dir = join(context.cwd, '.jean', 'exports')
+      mkdirSync(dir, { recursive: true })
+      const base = join(dir, `${doc.id}${sanitize ? '.sanitized' : ''}`)
+      writeFileSync(`${base}.md`, sessionMarkdown(doc))
+      writeFileSync(`${base}.json`, `${JSON.stringify(doc, null, 2)}\n`)
+      line(`${symbols.check} ${base}.md`)
+      line(`${symbols.check} ${base}.json ${color.dim('— `jean import` continues it anywhere')}`)
+    },
+  },
+  {
+    name: 'stats',
+    description: "Every session's tokens, cost, models, and tools (same as `jean stats`)",
+    async run(_, context) {
+      const { runStatsCommand } = await import('./sessions.ts')
+      runStatsCommand(context.cwd, {})
     },
   },
   {

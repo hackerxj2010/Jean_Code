@@ -18,6 +18,7 @@ import type { Tool } from './types.ts'
 import { transcribeTool } from './voice.ts'
 
 export * from './types.ts'
+export { registerReadSource, type ReadSource } from './file.ts'
 export { Registry, validateArgs, RISK_ORDER } from './registry.ts'
 export type { CallRecord, RegistryOptions } from './registry.ts'
 export {

@@ -11,6 +11,8 @@ import { useChatStore } from '../state/chat-store'
 import { getInputModeConfig } from '../utils/input-modes'
 import { isLinefeedActingAsEnter } from '../utils/terminal-enter-detection'
 import { BORDER_CHARS } from '../utils/ui-constants'
+import { ModelPicker } from './model-picker'
+import { usePickerStore } from '../state/picker-store'
 
 import type { useTheme } from '../hooks/use-theme'
 import type { InputValue } from '../types/store'
@@ -99,6 +101,7 @@ export const ChatInputBar = ({
 
   const modeConfig = getInputModeConfig(inputMode)
   const askUserState = useChatStore((state) => state.askUserState)
+  const pickerView = usePickerStore((state) => state.view)
   const hasAnyPreview = hasSuggestionMenu
 
   // Increase menu size on larger screen heights
@@ -240,6 +243,12 @@ export const ChatInputBar = ({
   const effectivePlaceholder =
     inputMode === 'default' ? inputPlaceholder : modeConfig.placeholder
   const borderColor = theme[modeConfig.color]
+
+  // The model and provider picker takes the prompt's place while it is
+  // open — unless the agent is asking something, which comes first.
+  if (pickerView && !askUserState) {
+    return <ModelPicker />
+  }
 
   if (askUserState) {
     return (

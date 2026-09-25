@@ -10,6 +10,8 @@ export type ToolRenderOptions = {
   indentationOffset: number
   previewPrefix?: string
   labelWidth: number
+  /** Folds or unfolds the block — its state lives in the chat store. */
+  onToggle?: () => void
 }
 
 export type ToolRenderConfig = {

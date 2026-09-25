@@ -175,6 +175,24 @@ export interface ProviderConfig {
   /** Literal key, or `${ENV_VAR}` to read from the environment. */
   apiKey?: string
   headers?: Record<string, string>
+  /**
+   * The wire format: `chat` (Chat Completions, the default for a provider
+   * of your own), `responses` (OpenAI Responses), `anthropic`, or `google`.
+   */
+  api?: 'chat' | 'responses' | 'anthropic' | 'google'
+  /** Display name, for a provider of your own. */
+  name?: string
+  /** Env vars holding the key, for a provider of your own. */
+  keyEnv?: string[]
+  /** Only these model ids are offered in the pickers. */
+  whitelist?: string[]
+  /** These model ids are never offered in the pickers. */
+  blacklist?: string[]
+  /**
+   * Models of a provider of your own — or extra ones of a known provider —
+   * with what the catalog would otherwise say about them.
+   */
+  models?: Record<string, { name?: string; context?: number; output?: number; api?: 'chat' | 'responses' | 'anthropic' | 'google' }>
 }
 
 /** The fully-resolved config the rest of the system reads. */
@@ -221,6 +239,20 @@ export interface JeanConfig {
    * turns it off regardless.
    */
   languageTools?: { autoInstall?: boolean; dir?: string }
+  /**
+   * Plugins (`~/.jean/plugins`, `.jean/plugins`) to run, by name — found is
+   * not enabled. `hotReload` (default true) reloads one when its files
+   * change, so a plugin being written is tried without a restart.
+   */
+  plugins?: { enabled?: string[]; hotReload?: boolean }
+  /**
+   * Chat platforms `jean gateway start` connects: `telegram`, `discord`,
+   * `slack`, `email`, `matrix`, `signal`, `whatsapp`, `sms` — each keyed by
+   * name with that adapter's settings (tokens, and the `allowedAccounts`
+   * that may talk to it). Kept as plain objects here; `@jean/gateway`
+   * defines their shapes.
+   */
+  gateway?: Record<string, Record<string, unknown>>
   mcpServers: Record<string, McpServerConfig>
   memory: MemoryConfig
   execution: ExecutionConfig
@@ -269,4 +301,6 @@ export interface LoadedConfig {
   sources: ConfigSource[]
   /** Non-fatal problems: unknown keys, unreadable files, bad values. */
   warnings: string[]
+  /** A flag, file, or variable named the model; false when it is the default. */
+  modelChosen?: boolean
 }

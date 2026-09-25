@@ -602,7 +602,10 @@ export const updateToolBlockWithOutput = (
       let output: string
       if (block.toolName === 'run_terminal_command') {
         const parsed = (toolOutput?.[0] as any)?.value
-        if (parsed?.stdout || parsed?.stderr) {
+        if (parsed && ('exitCode' in parsed || parsed.timedOut === true)) {
+          // Kept whole: the bash box shows how the command ended.
+          output = JSON.stringify(parsed)
+        } else if (parsed?.stdout || parsed?.stderr) {
           output = (parsed.stdout || '') + (parsed.stderr || '')
         } else {
           output = formatToolOutput(toolOutput)

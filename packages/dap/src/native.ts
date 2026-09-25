@@ -27,6 +27,8 @@ export interface Frame {
   column: number
   /** The source line the frame is on. */
   text: string | null
+  /** In the runtime rather than the program — Node's internals, say. */
+  internal?: boolean
 }
 
 export interface Value {
@@ -46,8 +48,11 @@ export interface Snapshot {
   description?: string | null
   text?: string | null
   thread?: number
+  /** How many threads the program has. */
+  threads?: number
   frames?: Frame[]
-  scopes?: { name: string; reference: number; expensive: boolean; variables: Value[] | null }[]
+  /** `sameAs` names an earlier scope holding the same variables — Python's globals at module level. */
+  scopes?: { name: string; reference: number; expensive: boolean; variables: Value[] | null; sameAs?: string }[]
   /** What the program printed since the previous snapshot. */
   output: string
 }

@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { Native, nativeReady } from '@jean/native'
+import { coreutilsShimDir, Native, nativeReady } from '@jean/native'
 import { nativeCommandLines, nativeKillTree } from './accelerate.ts'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { platform, tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { ToolError } from './types.ts'
 
@@ -22,6 +22,21 @@ import { ToolError } from './types.ts'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_OUTPUT_CHARS = 30_000
+
+/**
+ * Puts Jean's coreutils at the end of the session shell's PATH, so a command
+ * the system shell lacks — `jq` and `bc` in Git Bash, `jq` on macOS — runs
+ * the Rust implementation instead of failing. Last on PATH: a real one
+ * always wins. See `coreutilsShimDir`.
+ */
+function withCoreutils(context: ToolContext): void {
+  const dir = coreutilsShimDir()
+  if (!dir) return
+  const key = Object.keys(process.env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH'
+  const current = context.session.shellEnv[key] ?? process.env[key] ?? ''
+  if (current.split(delimiter).includes(dir)) return
+  context.session.shellEnv[key] = current ? `${current}${delimiter}${dir}` : dir
+}
 
 export function defaultShell(): { path: string; args: string[] } {
   if (platform() === 'win32') {
@@ -164,6 +179,7 @@ export const bashTool: Tool<{
 
     const shell = { path: context.config.shell.path ?? defaultShell().path, args: defaultShell().args }
     const timeout = args.timeout ?? context.config.shell.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    withCoreutils(context)
 
     if (args.background) {
       return startBackground(command, cwd, shell, context)

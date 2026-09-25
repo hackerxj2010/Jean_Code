@@ -16,6 +16,7 @@
 //! through `pi-sys`, so no debuggee outlives it.
 
 pub mod adapters;
+pub mod build;
 pub mod hub;
 pub mod session;
 

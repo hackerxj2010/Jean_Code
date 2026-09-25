@@ -83,6 +83,96 @@ export const JEAN_COMMANDS: CommandDefinition[] = [
     { args: true, aliases: ['undo'] },
   ),
 
+  command('redo', async () => {
+    const agent = await orchestrator()
+    const result = agent.redo()
+    if (!result) return 'Nothing to redo — `/undo` first; a new prompt clears what could be redone.'
+    const files = [...result.restored.map((p) => `restored ${p}`), ...result.removed.map((p) => `removed ${p}`)]
+    return [
+      `✓ Redid ${result.turns} turn${result.turns === 1 ? '' : 's'} — the agent remembers them again.`,
+      ...files.map((f) => `  ${f}`),
+      `Redone prompt: ${result.prompt.slice(0, 200)}`,
+    ].join('\n')
+  }),
+
+  command(
+    'compact',
+    async (params) => {
+      params.setMessages((prev) => [...prev, getSystemMessage('Summarizing the conversation so far…')])
+      const agent = await orchestrator()
+      const result = await agent.compactNow()
+      if (!result) return 'Not enough history to compact yet.'
+      return `✓ Compacted ${result.tokensBefore.toLocaleString()} → ${result.tokensAfter.toLocaleString()} tokens${result.modelGenerated ? '' : ' (without a model call)'}.`
+    },
+    { aliases: ['summarize'] },
+  ),
+
+  command(
+    'export',
+    async (_, args) => {
+      const agent = await orchestrator()
+      const sanitize = /\bsanitize\b/.test(args)
+      const doc = agent.exportTranscript({ sanitize })
+      if (!doc) return 'Nothing to export yet — send a prompt first.'
+      const { mkdirSync, writeFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const { sessionMarkdown } = await import('@jean/core')
+      const dir = join(doc.meta.cwd || process.cwd(), '.jean', 'exports')
+      mkdirSync(dir, { recursive: true })
+      const base = join(dir, `${doc.id}${sanitize ? '.sanitized' : ''}`)
+      writeFileSync(`${base}.md`, sessionMarkdown(doc))
+      writeFileSync(`${base}.json`, `${JSON.stringify(doc, null, 2)}\n`)
+      return [
+        `✓ Exported this session${sanitize ? ' without secrets, file contents, or tool output' : ''}:`,
+        `  ${base}.md`,
+        `  ${base}.json   (\`jean import\` continues it anywhere)`,
+        sanitize ? '' : '`/export sanitize` makes a copy safe to share.',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    },
+    { args: true },
+  ),
+
+  command(
+    'stats',
+    async () => {
+      const agent = await orchestrator()
+      const { estimateCost, findModel } = await import('@jean/model')
+      const usage = agent.store.usage()
+      const { provider, modelId } = agent.config.model
+      const cost = estimateCost(modelId, usage.inputTokens, usage.outputTokens, provider, usage.cacheReadTokens ?? 0)
+      const info = findModel(modelId, provider)
+      return [
+        `**This session** — ${provider}:${modelId}`,
+        '',
+        '| Turns | Tokens in | Tokens out | From cache | Cost |',
+        '|------:|----------:|-----------:|-----------:|-----:|',
+        `| ${usage.turns} | ${usage.inputTokens.toLocaleString()} | ${usage.outputTokens.toLocaleString()} | ${(usage.cacheReadTokens ?? 0).toLocaleString()} | ${info?.free ? 'free' : `~$${cost.toFixed(4)}`} |`,
+        '',
+        '`jean stats` adds up every session: by model, by tool, by day.',
+      ].join('\n')
+    },
+    { aliases: ['cost', 'usage'] },
+  ),
+
+  command(
+    'effort',
+    async (_, args) => {
+      const agent = await orchestrator()
+      const levels = ['fast', 'normal', 'high', 'xhigh'] as const
+      const wanted = args.trim().toLowerCase()
+      const current = agent.config.effort
+      const next = wanted
+        ? levels.find((level) => level === wanted)
+        : levels[(levels.indexOf(current as (typeof levels)[number]) + 1) % levels.length]
+      if (!next) return `Unknown effort "${wanted}". One of: ${levels.join(', ')}.`
+      agent.config.effort = next
+      return `✓ Reasoning effort: **${next}** (was ${current}). \`/effort\` alone cycles fast → normal → high → xhigh.`
+    },
+    { args: true, aliases: ['variant'] },
+  ),
+
   command(
     'arena',
     async (params, args) => {

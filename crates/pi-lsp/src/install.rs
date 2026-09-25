@@ -93,6 +93,17 @@ fn tool(name: &str) -> Result<PathBuf, String> {
     detect::which(name, &[], &[]).ok_or_else(|| format!("`{name}` is not installed"))
 }
 
+/// Windows' own bsdtar, by full path: it reads zip and every tar compression,
+/// where Git for Windows' GNU tar — often first on PATH — reads no zip and
+/// takes the `C:` of a path for a remote host.
+fn system_tar() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let system = PathBuf::from(std::env::var("SystemRoot").ok()?).join("System32").join("tar.exe");
+    system.is_file().then_some(system)
+}
+
 fn python() -> Result<PathBuf, String> {
     ["python3", "python", "py"].iter().find_map(|name| detect::which(name, &[], &[])).ok_or_else(|| "Python is not installed".to_string())
 }
@@ -365,13 +376,8 @@ impl Toolbox {
 
         if name.ends_with(".zip") || name.ends_with(".vsix") {
             log.push(format!("unzip {name}"));
-            // Windows ships bsdtar, which reads zip; Git for Windows' GNU tar,
-            // often first on PATH, does not — so the system one by full path.
-            if cfg!(windows) {
-                let system = std::env::var("SystemRoot").map(|root| PathBuf::from(root).join("System32").join("tar.exe")).unwrap_or_default();
-                if system.is_file() {
-                    return run(&system, &["-xf", &archive_text, "-C", &into_text], None, &[]).map(|_| ());
-                }
+            if let Some(system) = system_tar() {
+                return run(&system, &["-xf", &archive_text, "-C", &into_text], None, &[]).map(|_| ());
             }
             if let Ok(unzip) = tool("unzip") {
                 return run(&unzip, &["-o", "-q", &archive_text, "-d", &into_text], None, &[]).map(|_| ());
@@ -380,7 +386,13 @@ impl Toolbox {
         }
         if [".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tar"].iter().any(|ext| name.ends_with(ext)) {
             log.push(format!("untar {name}"));
-            return run(&tool("tar")?, &["-xf", &archive_text, "-C", &into_text], None, &[]).map(|_| ());
+            if let Some(system) = system_tar() {
+                return run(&system, &["-xf", &archive_text, "-C", &into_text], None, &[]).map(|_| ());
+            }
+            // GNU tar reads `C:` in a path as a remote host unless told not to.
+            let mut args: Vec<&str> = if cfg!(windows) { vec!["--force-local"] } else { Vec::new() };
+            args.extend(["-xf", archive_text.as_str(), "-C", into_text.as_str()]);
+            return run(&tool("tar")?, &args, None, &[]).map(|_| ());
         }
         if name.ends_with(".gz") {
             log.push(format!("gunzip {name}"));

@@ -19,20 +19,53 @@ export {
   estimateTokens,
   findModel,
   modelInfo,
+  modelsOf,
+  reservedModel,
   supportsThinking,
   supportsTools,
   supportsVision,
 } from './catalog.ts'
 export {
+  apiOfPackage,
+  catalogAge,
+  catalogFromModelsDev,
+  catalogPath,
+  liveCatalog,
+  MODELS_URL,
+  refreshCatalog,
+  refreshCatalogInBackground,
+  setCatalog,
+} from './models-dev.ts'
+export type { Catalog, CatalogProvider } from './models-dev.ts'
+export {
+  catalogIdOf,
+  connectedProviders,
   createProvider,
+  guessApi,
+  hasCredentials,
+  listProviders,
+  providerEntry,
+  providerEnv,
   providerLabel,
   providerNames,
   OPENAI_COMPATIBLE,
   AnthropicProvider,
   GoogleProvider,
   OpenAICompatibleProvider,
+  OpenAIResponsesProvider,
+  RoutedProvider,
 } from './providers/index.ts'
-export type { ProviderDescriptor } from './providers/index.ts'
+export type { CreateOptions, ProviderDescriptor, ProviderEntry } from './providers/index.ts'
+export {
+  chooseModel,
+  favoriteModels,
+  modelRef,
+  recentModels,
+  recommendedModel,
+  rememberModel,
+  toggleFavorite,
+} from './selection.ts'
+export type { ModelChoice, ModelTier } from './selection.ts'
 export {
   applyStreamRules,
   collect,

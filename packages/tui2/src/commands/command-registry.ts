@@ -329,7 +329,7 @@ const ALL_COMMANDS: CommandDefinition[] = [
   }),
   defineCommand({
     name: 'history',
-    aliases: ['chats'],
+    aliases: ['chats', 'sessions', 'resume', 'continue'],
     handler: (params) => {
       params.saveToHistory(params.inputValue.trim())
       clearInput(params)

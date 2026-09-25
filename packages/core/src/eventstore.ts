@@ -14,7 +14,7 @@ import type { ContentBlock, Message, Usage } from '@jean/model'
  */
 
 export type JeanEvent =
-  | { type: 'session_start'; at: number; cwd: string; mode: string; model: string }
+  | { type: 'session_start'; at: number; cwd: string; mode: string; model: string; title?: string }
   | {
       type: 'user_message'
       at: number

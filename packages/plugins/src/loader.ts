@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs'
+import { existsSync, watch, type FSWatcher } from 'node:fs'
 import { pathToFileURL } from 'node:url'
-import { join, resolve } from 'node:path'
-import type { Plugin, PluginManifest } from './index.ts'
+import { join, resolve, sep } from 'node:path'
+import { readManifest, type Plugin, type PluginManifest } from './index.ts'
 
 /**
  * Plugin activation (architecture §20.3).
@@ -106,7 +106,72 @@ export class PluginLoader {
   async load(plugin: Plugin): Promise<LoadedPlugin> {
     const existing = this.loaded.get(plugin.manifest.name)
     if (existing) return existing
+    return this.activate(plugin, false)
+  }
 
+  /**
+   * Deactivates a plugin and activates it again from its files as they are
+   * now — its manifest re-read, every module under its directory evaluated
+   * afresh. Never throws: a reload that fails leaves the plugin disabled
+   * with the error, as a first load would.
+   */
+  async reload(plugin: Plugin): Promise<LoadedPlugin> {
+    const previous = this.loaded.get(plugin.manifest.name)
+    try {
+      await previous?.module?.deactivate?.()
+    } catch {
+      // The old version is going away either way.
+    }
+    this.loaded.delete(plugin.manifest.name)
+    const manifest = readManifest(join(plugin.path, 'jean-plugin.json')) ?? plugin.manifest
+    return this.activate({ ...plugin, manifest }, true)
+  }
+
+  /**
+   * Reloads each plugin when a file in its directory changes, and reports the
+   * result. Changes are gathered for a moment first: an editor's save is
+   * several writes, and a build rewrites many files at once.
+   *
+   * Returns a function that stops watching.
+   */
+  watch(plugins: Plugin[], onReload: (loaded: LoadedPlugin) => void, settleMs = 250): () => void {
+    const watchers: FSWatcher[] = []
+    for (const plugin of plugins) {
+      if (!this.loaded.has(plugin.manifest.name)) continue
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let running = Promise.resolve()
+      const changed = (file: string | null) => {
+        // Dependencies and dotfiles change under a plugin without changing it.
+        if (file && /(^|[\\/])(node_modules|\.git)([\\/]|$)|(^|[\\/])\.[^\\/]+$/.test(file)) return
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(() => {
+          running = running.then(async () => onReload(await this.reload(plugin)))
+        }, settleMs)
+        timer.unref?.()
+      }
+      try {
+        const watcher = watch(plugin.path, { recursive: true }, (_event, file) => changed(file ? String(file) : null))
+        watcher.on('error', () => undefined)
+        watcher.unref?.()
+        watchers.push(watcher)
+      } catch {
+        // No recursive watching on this platform or file system: watch the
+        // directory itself, which still sees its entry point change.
+        try {
+          const watcher = watch(plugin.path, (_event, file) => changed(file ? String(file) : null))
+          watcher.unref?.()
+          watchers.push(watcher)
+        } catch {
+          // Not watchable at all; the plugin still works, unreloaded.
+        }
+      }
+    }
+    return () => {
+      for (const watcher of watchers.splice(0)) watcher.close()
+    }
+  }
+
+  private async activate(plugin: Plugin, fresh: boolean): Promise<LoadedPlugin> {
     const record: LoadedPlugin = {
       manifest: plugin.manifest,
       path: plugin.path,
@@ -137,8 +202,11 @@ export class PluginLoader {
     try {
       // `pathToFileURL` rather than the raw path: a bare Windows path is not a
       // valid module specifier and `import` rejects it.
+      // A reload has to evaluate the plugin's code again, dependencies
+      // included: the runtime keeps every module it evaluated, keyed by path.
+      if (fresh) forget(plugin.path)
       const module = (await withTimeout(
-        import(pathToFileURL(entry).href),
+        import(pathToFileURL(entry).href + (fresh ? `?reload=${Date.now()}` : '')),
         this.options.timeoutMs ?? 10_000,
         `${plugin.manifest.name} took too long to load`,
       )) as PluginModule
@@ -209,6 +277,16 @@ export class PluginLoader {
       .filter((p) => !p.error)
       .flatMap((p) => (p.manifest.bin ?? []).map((dir) => join(p.path, dir)))
       .filter((dir) => existsSync(dir))
+  }
+}
+
+/** Drops every module under `dir` from the runtime's cache. */
+function forget(dir: string): void {
+  const cache = (globalThis as { require?: { cache?: Record<string, unknown> } }).require?.cache ?? require.cache
+  const prefix = resolve(dir) + sep
+  for (const key of Object.keys(cache)) {
+    const path = key.startsWith('file:') ? decodeURIComponent(new URL(key).pathname).replace(/^\/([A-Za-z]:)/, '$1') : key
+    if (resolve(path).startsWith(prefix)) delete cache[key]
   }
 }
 

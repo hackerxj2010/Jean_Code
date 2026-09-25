@@ -8,19 +8,23 @@
 //! file, agent B rewrites it, agent A writes back its edit of the stale
 //! version, and B's work is gone with no error anywhere.
 //!
-//! Backends, in preference order: APFS `clonefile` (macOS), btrfs/XFS reflink
-//! (Linux), overlayfs (Linux), ProjFS (Windows), plain copy (everywhere).
-//! Only the copy backend is implemented here; the others need platform APIs
-//! this crate does not link. Detection reports what *would* be used, so the
-//! decision is visible rather than assumed, and the copy fallback is correct
-//! everywhere — just slower.
+//! A view is made of clones where the file system can clone — APFS
+//! `clonefile` on macOS, a `FICLONE` reflink on btrfs and XFS, ReFS block
+//! cloning on a Windows Dev Drive — so it costs metadata, not a second copy
+//! of the tree; elsewhere, of copies. Each file that is cloned shares its
+//! blocks with the original until one of them is written, which is exactly
+//! the isolation a view needs. (overlayfs and ProjFS would do it for a whole
+//! directory, but each needs privileges or a service kept running for the
+//! life of the view; one system call per file needs neither.)
 //!
 //! What is fully implemented, and is the part that actually matters, is the
 //! **merge**: deciding which changes in an isolated view can be applied back to
 //! a tree that may have moved underneath it, and refusing the ones that cannot.
 
+pub mod clone;
 pub mod merge;
 
+pub use clone::Cloner;
 pub use merge::{merge, Change, Conflict, MergePlan, Resolution};
 
 use pi_builtins::hash::sha256_hex;
@@ -32,12 +36,10 @@ use std::path::{Path, PathBuf};
 pub enum Backend {
     /// macOS APFS `clonefile`: instant, blocks shared until written.
     Apfs,
-    /// btrfs / XFS reflink.
+    /// btrfs / XFS / bcachefs reflink, through `FICLONE`.
     Reflink,
-    /// Linux overlayfs: a writable layer over a read-only base.
-    Overlayfs,
-    /// Windows Projected File System.
-    Projfs,
+    /// ReFS block cloning, as a Windows Dev Drive has.
+    BlockClone,
     /// A full copy. Correct everywhere, slow on a large tree.
     Copy,
 }
@@ -47,44 +49,40 @@ impl Backend {
         match self {
             Backend::Apfs => "apfs-clonefile",
             Backend::Reflink => "reflink",
-            Backend::Overlayfs => "overlayfs",
-            Backend::Projfs => "projfs",
+            Backend::BlockClone => "refs-block-clone",
             Backend::Copy => "copy",
         }
     }
 
-    /// Whether this crate can actually use it, as opposed to detecting it.
-    pub fn implemented(&self) -> bool {
-        matches!(self, Backend::Copy)
+    fn from_method(method: &str) -> Backend {
+        match method {
+            "apfs-clonefile" => Backend::Apfs,
+            "reflink" => Backend::Reflink,
+            "refs-block-clone" => Backend::BlockClone,
+            _ => Backend::Copy,
+        }
     }
 }
 
-/// The best backend available for a path, and whether it is usable.
-///
-/// Detection is deliberately conservative: reporting a fast backend that then
-/// fails halfway through a clone leaves a half-populated view, which is worse
-/// than having been slow.
+/// The cloning this platform would try for `path`: its method where the
+/// file system is known to support it, the plain copy where it is known not
+/// to. What a view actually used is `View::backend`, decided by trying.
 pub fn detect(path: &Path) -> Backend {
     if cfg!(target_os = "macos") {
         // APFS is the default on every supported macOS version.
         return Backend::Apfs;
     }
-
     if cfg!(target_os = "linux") {
-        // A real check reads /proc/mounts for the filesystem type of the mount
-        // containing `path`. Without that, claiming reflink would be a guess.
         if let Ok(mounts) = fs::read_to_string("/proc/mounts") {
-            if mount_type(&mounts, path).is_some_and(|kind| kind == "btrfs" || kind == "xfs") {
+            if mount_type(&mounts, path).is_some_and(|kind| matches!(kind.as_str(), "btrfs" | "xfs" | "bcachefs")) {
                 return Backend::Reflink;
             }
         }
-        return Backend::Overlayfs;
+        return Backend::Copy;
     }
-
     if cfg!(windows) {
-        return Backend::Projfs;
+        return Backend::BlockClone;
     }
-
     Backend::Copy
 }
 
@@ -191,7 +189,10 @@ impl Snapshot {
 pub struct View {
     pub root: PathBuf,
     pub source: PathBuf,
+    /// How the view was filled: a clone method when any file was cloned.
     pub backend: Backend,
+    /// How many files were cloned rather than copied.
+    pub cloned: usize,
     /// The source's state when the view was made, for three-way merging.
     pub base: Snapshot,
     /// Path components never copied in or merged back.
@@ -212,24 +213,27 @@ impl View {
         destination: &Path,
         exclude: &[String],
     ) -> Result<View, String> {
-        let backend = detect(source);
         let base = Snapshot::of_excluding(source, exclude)?;
 
         fs::create_dir_all(destination)
             .map_err(|error| format!("{}: {error}", destination.display()))?;
 
-        // Only the copy backend is implemented; the rest fall back to it rather
-        // than failing, because a slow isolation is still isolation.
-        if exclude.is_empty() {
-            copy_tree(source, destination)?;
-        } else {
-            copy_files(source, destination, base.files.keys())?;
+        // Only the files in the snapshot: what is excluded from it is
+        // excluded from the view by construction.
+        let mut cloner = Cloner::default();
+        for relative in base.files.keys() {
+            let target = destination.join(relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+            }
+            cloner.place(&source.join(relative), &target)?;
         }
 
         Ok(View {
             root: destination.to_path_buf(),
             source: source.to_path_buf(),
-            backend: if backend.implemented() { backend } else { Backend::Copy },
+            backend: Backend::from_method(cloner.method()),
+            cloned: cloner.cloned,
             base,
             exclude: exclude.to_vec(),
         })
@@ -284,35 +288,6 @@ impl View {
     }
 }
 
-fn copy_files<'a>(
-    source: &Path,
-    destination: &Path,
-    files: impl Iterator<Item = &'a String>,
-) -> Result<(), String> {
-    for relative in files {
-        let target = destination.join(relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-        }
-        fs::copy(source.join(relative), &target)
-            .map_err(|error| format!("{relative}: {error}"))?;
-    }
-    Ok(())
-}
-
-fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
-    let output = pi_builtins::files::cp(
-        source,
-        destination,
-        &pi_builtins::files::CopyOptions { recursive: true, ..Default::default() },
-    );
-    if output.is_ok() {
-        Ok(())
-    } else {
-        Err(output.stderr.trim().to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,7 +317,7 @@ mod tests {
     fn detection_reports_a_backend_for_this_platform() {
         let backend = detect(Path::new("."));
         if cfg!(windows) {
-            assert_eq!(backend, Backend::Projfs);
+            assert_eq!(backend, Backend::BlockClone);
         } else if cfg!(target_os = "macos") {
             assert_eq!(backend, Backend::Apfs);
         }

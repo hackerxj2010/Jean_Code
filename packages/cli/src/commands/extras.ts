@@ -2,7 +2,10 @@ import { join } from 'node:path'
 import type { JeanConfig } from '@jean/config'
 import { jeanHome } from '@jean/config'
 import { CodeMap } from '@jean/codemap'
-import { IdentityStore, identityStorePath } from '@jean/gateway'
+import { Orchestrator } from '@jean/agent'
+import { newSessionId } from '@jean/core'
+import { Gateway, IdentityStore, identityStorePath, PLATFORMS, type Identity, type PlatformConfig } from '@jean/gateway'
+import { ModelClient } from '@jean/model'
 import { renderResults, SearchChain } from '@jean/search'
 import { renderReport, scanDirectory } from '@jean/security'
 import { Daemon, describeSchedule, type ScheduleKind } from '@jean/scheduler'
@@ -201,7 +204,7 @@ export function runScheduleCommand(args: string[], cwd: string): number {
 
 // ---- gateway --------------------------------------------------------------
 
-export function runGatewayCommand(args: string[], cwd: string, _config: JeanConfig): number {
+export function runGatewayCommand(args: string[], cwd: string, config: JeanConfig): number | Promise<number> {
   const identities = new IdentityStore(identityStorePath(jeanHome()))
   const [action] = args
 
@@ -256,15 +259,80 @@ export function runGatewayCommand(args: string[], cwd: string, _config: JeanConf
     }
 
     case 'start':
-      errorLine(
-        'Starting the gateway needs a bot token. Set it in config under `gateway.telegram.token`, then run `jean gateway start` again.',
-      )
-      return 1
+      return startGateway(config, cwd, identities)
 
     default:
       errorLine(`Unknown action "${action}". Use link, status, unlink, or start.`)
       return 2
   }
+}
+
+/** Where each platform's settings go, for when none is configured. */
+const GATEWAY_SETUP = [
+  'telegram  gateway.telegram.token, .allowedAccounts   (a bot from @BotFather)',
+  'discord   gateway.discord.token, .allowedAccounts',
+  'slack     gateway.slack.appToken, .botToken, .allowedAccounts   (Socket Mode)',
+  'email     gateway.email.imap {host,user,password}, .smtp {host,user,password,from}, .allowedAccounts',
+  'matrix    gateway.matrix.homeserver, .accessToken, .allowedAccounts',
+  'signal    gateway.signal.url (signal-cli daemon --http), .account, .allowedAccounts',
+  'whatsapp  gateway.whatsapp.phoneNumberId, .accessToken, .appSecret, .verifyToken, .port, .allowedAccounts',
+  'sms       gateway.sms.accountSid, .authToken, .fromNumber, .publicUrl, .port, .allowedAccounts   (Twilio)',
+]
+
+/**
+ * `jean gateway start`: connects every configured platform and answers
+ * linked accounts with an agent session each, in the directory their link
+ * code was made in, until Ctrl+C.
+ *
+ * Nobody on a phone can approve a prompt, so the configured permission
+ * mode applies as is: in `ask` mode a gated action is refused, not asked.
+ */
+async function startGateway(config: JeanConfig, cwd: string, identities: IdentityStore): Promise<number> {
+  const platforms = (config.gateway ?? {}) as PlatformConfig
+  const configured = PLATFORMS.filter((name) => platforms[name])
+  if (configured.length === 0) {
+    errorLine('No platform is configured. Add one to ~/.jean/config.json under `gateway`:')
+    for (const entry of GATEWAY_SETUP) errorLine(color.dim(`  ${entry}`))
+    errorLine(color.dim('Then `jean gateway link` in the directory to work in, and send the code from the account.'))
+    return 1
+  }
+
+  const client = new ModelClient({ config })
+  const sessions = new Map<string, Orchestrator>()
+  const session = (identity: Identity) => {
+    let agent = sessions.get(identity.id)
+    if (!agent) {
+      agent = new Orchestrator({ config, client, cwd: identity.cwd ?? cwd, sessionId: identity.sessionId ?? newSessionId() })
+      sessions.set(identity.id, agent)
+    }
+    return agent
+  }
+
+  const gateway = new Gateway({
+    identities,
+    platforms,
+    run: async (identity, prompt) => {
+      const result = await session(identity).send(prompt)
+      if (result.stopReason === 'error') return `The turn failed: ${result.error ?? 'unknown error'}`
+      return result.text.trim() || '(done — no reply text)'
+    },
+    onLog: (message) => line(color.dim(`  ${message}`)),
+    onError: (message) => errorLine(color.yellow(`  ${symbols.warn} ${message}`)),
+  })
+
+  const { started, failed } = await gateway.start()
+  for (const failure of failed) errorLine(color.red(`  ${symbols.cross} ${failure.platform}: ${failure.error}`))
+  if (started.length === 0) return 1
+  line(`${color.green(symbols.check)} Gateway running on ${started.join(', ')}. Ctrl+C stops it.`)
+
+  await new Promise<void>((resolve) => {
+    process.once('SIGINT', resolve)
+    process.once('SIGTERM', resolve)
+  })
+  await gateway.stop()
+  for (const agent of sessions.values()) agent.end('gateway stopped')
+  line(color.dim('  Gateway stopped.'))
+  return 0
 }
 
 // ---- scan -----------------------------------------------------------------

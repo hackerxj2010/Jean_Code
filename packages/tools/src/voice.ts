@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { nativeReady } from '@jean/native'
 import { displayPath, resolveInWorkspace } from './file.ts'
 import type { Tool, ToolResult } from './types.ts'
@@ -9,7 +9,8 @@ import { ToolError } from './types.ts'
 /**
  * `transcribe` — speech in a recording, as text.
  *
- * `pi-voice` does the part that runs here: it decodes the WAV, mixes it to
+ * `pi-voice` does the part that runs here: it decodes the recording (WAV,
+ * FLAC, AIFF, `.au` itself; MP3, Ogg, M4A, WebM through ffmpeg), mixes it to
  * mono, resamples to 16 kHz, and trims the silence at both ends. That is the
  * format every speech-to-text service wants, and usually a fraction of the
  * original upload. The recognition itself goes to a Whisper-compatible
@@ -17,6 +18,19 @@ import { ToolError } from './types.ts'
  * or `JEAN_TRANSCRIBE_URL` (with `JEAN_TRANSCRIBE_KEY`) for anything else —
  * a local whisper.cpp server included.
  */
+
+/** Recordings `read` and `transcribe` take. */
+export const AUDIO_EXTENSIONS = [
+  '.wav', '.flac', '.aiff', '.aif', '.aifc', '.au', '.snd',
+  '.mp3', '.ogg', '.oga', '.opus', '.m4a', '.mp4', '.webm', '.aac', '.wma', '.amr',
+]
+
+/** What a Whisper-compatible service accepts as uploaded, when it cannot be prepared here. */
+const UPLOADABLE = ['.flac', '.m4a', '.mp3', '.mp4', '.mpeg', '.mpga', '.oga', '.ogg', '.wav', '.webm']
+
+export function isAudio(path: string): boolean {
+  return AUDIO_EXTENSIONS.includes(extname(path).toLowerCase())
+}
 
 interface Endpoint {
   url: string
@@ -58,7 +72,7 @@ export const transcribeTool: Tool<{ path: string; language?: string; prompt?: st
   name: 'transcribe',
   risk: 'network',
   description: [
-    'Transcribe the speech in a WAV recording to text.',
+    'Transcribe the speech in a recording to text: WAV, FLAC, AIFF, MP3, Ogg/Opus, M4A, WebM.',
     '',
     'The audio is prepared locally (mono, 16 kHz, silence trimmed), then sent to the',
     'configured speech-to-text service. `read` on the same file shows its length and',
@@ -67,7 +81,7 @@ export const transcribeTool: Tool<{ path: string; language?: string; prompt?: st
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'The .wav file, relative to the project root.' },
+      path: { type: 'string', description: 'The recording, relative to the project root.' },
       language: { type: 'string', description: 'ISO-639-1 code, e.g. "en" or "fr". Optional.' },
       prompt: { type: 'string', description: 'Words to expect — names, jargon. Optional.' },
     },
@@ -78,33 +92,52 @@ export const transcribeTool: Tool<{ path: string; language?: string; prompt?: st
   async execute(args, context): Promise<ToolResult> {
     const absolute = resolveInWorkspace(args.path, context)
     const shown = displayPath(absolute, context)
-    if (!absolute.toLowerCase().endsWith('.wav')) {
-      throw new ToolError(`${shown} is not a WAV file.`, 'Convert it first, e.g. `ffmpeg -i in.mp3 out.wav`.')
+    const extension = extname(absolute).toLowerCase()
+    if (!isAudio(absolute)) {
+      throw new ToolError(`${shown} is not a recording this reads.`, `Recordings: ${AUDIO_EXTENSIONS.join(' ')}`)
     }
 
     const native = await nativeReady()
-    if (!native) {
-      throw new ToolError('Audio is prepared by the native bridge, which is not built.', 'Run `jean native build`.')
-    }
-
     const scratch = mkdtempSync(join(tmpdir(), 'jean-transcribe-'))
     try {
-      const probed = await native.voiceProbe(absolute)
-      if (probed.speech.length === 0) {
-        return { output: `${shown} has no speech in it (${(probed.durationMs / 1000).toFixed(1)}s of audio).` }
+      // Prepared here when it can be: smaller, and silence-only recordings
+      // are caught without a request. Otherwise a format the service takes
+      // goes as it is.
+      let upload: { path: string; seconds?: number } | undefined
+      let unprepared = ''
+      if (native) {
+        try {
+          const probed = await native.voiceProbe(absolute)
+          if (probed.speech.length === 0) {
+            return { output: `${shown} has no speech in it (${(probed.durationMs / 1000).toFixed(1)}s of audio).` }
+          }
+          const prepared = await native.voicePrepare(absolute, join(scratch, 'prepared.wav'))
+          upload = { path: prepared.output, seconds: prepared.durationMs / 1000 }
+        } catch (error) {
+          unprepared = error instanceof Error ? error.message : String(error)
+        }
+      } else {
+        unprepared = 'the native bridge is not built'
       }
-      const prepared = await native.voicePrepare(absolute, join(scratch, 'prepared.wav'))
+      if (!upload) {
+        if (!UPLOADABLE.includes(extension)) {
+          throw new ToolError(`${shown} could not be prepared (${unprepared}).`, 'Install ffmpeg, which decodes it, or convert it to WAV.')
+        }
+        upload = { path: absolute }
+      }
 
       const endpoint = transcriptionEndpoint()
       if (!endpoint) {
         throw new ToolError(
-          `${shown} has speech (${probed.speech.length} segment(s), ${(prepared.durationMs / 1000).toFixed(1)}s after trimming), but no speech-to-text service is configured.`,
+          `${shown} is ready to transcribe, but no speech-to-text service is configured.`,
           'Set GROQ_API_KEY or OPENAI_API_KEY, or JEAN_TRANSCRIBE_URL for a Whisper-compatible server.',
         )
       }
 
+      const prepared = upload
+      const name = prepared.path === absolute ? basename(absolute) : `${basename(absolute, extension)}.wav`
       const form = new FormData()
-      form.append('file', new Blob([readFileSync(prepared.output)], { type: 'audio/wav' }), basename(absolute))
+      form.append('file', new Blob([readFileSync(prepared.path)]), name)
       form.append('model', endpoint.model)
       form.append('response_format', 'json')
       if (args.language) form.append('language', args.language)
@@ -124,7 +157,7 @@ export const transcribeTool: Tool<{ path: string; language?: string; prompt?: st
       const text = body.text?.trim() ?? ''
       return {
         output: text
-          ? `${shown} (${(prepared.durationMs / 1000).toFixed(1)}s of speech, via ${endpoint.label}):\n\n${text}`
+          ? `${shown} (${prepared.seconds === undefined ? 'sent as recorded' : `${prepared.seconds.toFixed(1)}s of speech`}, via ${endpoint.label}):\n\n${text}`
           : `${endpoint.label} heard no words in ${shown}.`,
         display: { kind: 'transcript', path: shown, chars: text.length },
       }

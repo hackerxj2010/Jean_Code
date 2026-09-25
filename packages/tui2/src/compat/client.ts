@@ -13,7 +13,7 @@
 
 import { Orchestrator } from '@jean/agent'
 import { EventStore, newSessionId } from '@jean/core'
-import { ModelClient } from '@jean/model'
+import { chooseModel, ModelClient } from '@jean/model'
 import { loadConfig, type Effort, type PermissionMode } from '@jean/config'
 import { openMemory, type MemoryBackend } from '@jean/memory'
 
@@ -60,6 +60,7 @@ export class JeanClient {
     if (this.orchestrator) return this.orchestrator
 
     const loaded = loadConfig({ cwd: this.options.cwd })
+    loaded.config = chooseModel(loaded.config, loaded.modelChosen ?? true).config
     this.baseline = { effort: loaded.config.effort, permissionMode: loaded.config.permissionMode }
     const client = new ModelClient({ config: loaded.config })
     this.memory ??= openMemory(loaded.config).backend
@@ -152,27 +153,35 @@ export class JeanClient {
       }
     }
 
-    const unsubscribe = attach(orchestrator, (raw) => {
-      const event = raw as LoopEventLike
+    /**
+     * One loop event, from the main agent (`owner` undefined) or from inside
+     * the sub-agent started by the `spawn` call `owner`. A sub-agent's tool
+     * calls land inside its block, so a running explorer shows what it is
+     * searching; its words are left out until its report, which is the one
+     * part of its text worth reading.
+     */
+    const route = (event: LoopEventLike, owner: string | undefined) => {
       switch (event.type) {
         case 'text':
-          say(event.delta)
+          if (owner === undefined) say(event.delta)
           break
 
         case 'thinking':
-          think(event.delta)
+          if (owner === undefined) think(event.delta)
           break
 
         case 'tool_start': {
           if (event.name === 'spawn') {
-            const input = event.input as { agent?: string; prompt?: string } | undefined
+            const input = event.input as { agent?: string; task?: string; prompt?: string } | undefined
             const agentType = input?.agent ?? 'general'
             spawned.set(event.id, agentType)
             forward({
               type: 'subagent_start',
               agentId: event.id,
               agentType,
-              prompt: input?.prompt,
+              // The spawn tool's argument is `task`.
+              prompt: input?.task ?? input?.prompt,
+              ...(owner !== undefined && { parentAgentId: owner }),
             })
             break
           }
@@ -189,6 +198,7 @@ export class JeanClient {
               event.name,
               event.input as Record<string, unknown> | undefined,
             ),
+            ...(owner !== undefined && { agentId: owner, parentAgentId: owner }),
           })
           // The result arrives under a different event, by id, so the original
           // name has to be remembered to shape it the same way.
@@ -205,6 +215,7 @@ export class JeanClient {
               agentId: event.id,
               agentType,
               output: event.result,
+              ...(owner !== undefined && { parentAgentId: owner }),
             })
             break
           }
@@ -216,22 +227,35 @@ export class JeanClient {
             type: 'tool_result',
             toolCallId: event.id,
             output: adaptOutput(jeanName, event.result),
+            ...(owner !== undefined && { agentId: owner, parentAgentId: owner }),
           })
           break
         }
 
+        case 'subagent':
+          // Only while its block is open: a late event from a finished or
+          // unknown spawn has nowhere to go.
+          if (event.spawnId !== undefined && spawned.has(event.spawnId)) {
+            route(event.event, event.spawnId)
+          }
+          break
+
         case 'error':
           // Non-fatal errors are shown and the run continues; a fatal one ends
           // the turn, and `finish` below reports it.
-          if (!event.fatal) {
-            say(`\n${event.message}\n`)
+          if (!event.fatal && owner === undefined) {
+            say(`
+${event.message}
+`)
           }
           break
 
         default:
           break
       }
-    })
+    }
+
+    const unsubscribe = attach(orchestrator, (raw) => route(raw as LoopEventLike, undefined))
 
     const abort = () => orchestrator.interrupt()
     config.signal.addEventListener('abort', abort, { once: true })
@@ -317,6 +341,7 @@ type LoopEventLike =
   | { type: 'tool_start'; id: string; name: string; input: unknown; summary: string }
   | { type: 'tool_end'; id: string; name: string; result: unknown; durationMs: number }
   | { type: 'error'; message: string; fatal: boolean }
+  | { type: 'subagent'; agent: string; spawnId?: string; event: LoopEventLike }
   | { type: 'turn_start' | 'turn_end' | 'compacted' | 'notice' }
 
 /** Folds text attachments into the prompt; images travel separately. */

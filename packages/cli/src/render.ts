@@ -111,6 +111,12 @@ export class Renderer {
         this.spinner.stop()
         line(color.red(`${symbols.cross} ${event.message}`))
         break
+
+      case 'subagent':
+        // A sub-agent's calls stay out of the transcript — its report is what
+        // counts — but the spinner says what it is doing meanwhile.
+        if (event.event.type === 'tool_start') this.spinner.start(`${event.agent} › ${event.event.summary}`)
+        break
     }
   }
 

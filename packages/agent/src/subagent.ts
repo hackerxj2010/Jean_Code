@@ -22,12 +22,22 @@ export interface SpawnOptions {
   signal?: AbortSignal
   /** Nesting depth. Sub-agents may spawn, but not without bound. */
   depth?: number
-  /** Forwarded so the TUI can show sub-agent progress. */
-  onEvent?: (agent: string, event: LoopEvent) => void
+  /**
+   * Forwarded so the TUI can show sub-agent progress, with the id of the
+   * `spawn` call it belongs to.
+   */
+  onEvent?: (agent: string, event: LoopEvent, spawnId?: string) => void
+  /** The `spawn` call this run answers, when a tool call started it. */
+  spawnId?: string
   /** Who can be spawned: the built-ins plus any custom agents. Default: built-ins. */
   agents?: AgentDefinition[]
   /** The parent's permission rules, which bind its sub-agents too. */
   policy?: ToolContext['policy']
+  /**
+   * The `task_id` of an earlier run to continue: the same agent, with
+   * everything it read and did, given `task` as its next instruction.
+   */
+  resume?: string
 }
 
 /**
@@ -62,6 +72,27 @@ export interface SubagentResult {
   ok: boolean
   error?: string
   durationMs: number
+  /** Pass back as `task_id` to continue this agent where it stopped. */
+  taskId?: string
+}
+
+/**
+ * Finished runs that can be continued, by `task_id`: their transcript and
+ * the prompt they ran under. The oldest are dropped past a few dozen; a
+ * resumed run replaces its entry.
+ */
+interface Paused {
+  agent: string
+  store: EventStore
+  systemPrompt: string
+}
+const PAUSED = new Map<string, Paused>()
+const MAX_PAUSED = 32
+
+function keep(id: string, paused: Paused): void {
+  PAUSED.delete(id)
+  PAUSED.set(id, paused)
+  while (PAUSED.size > MAX_PAUSED) PAUSED.delete(PAUSED.keys().next().value!)
 }
 
 /** Deepest nesting allowed. Beyond this, spawning is refused, not silently ignored. */
@@ -113,6 +144,23 @@ export async function spawnSubagent(
     }
   }
 
+  const earlier = options.resume ? PAUSED.get(options.resume) : undefined
+  if (options.resume && (!earlier || earlier.agent !== agentName)) {
+    return {
+      agent: agentName,
+      task,
+      report: earlier
+        ? `task_id "${options.resume}" belongs to a ${earlier.agent} agent, not ${agentName}.`
+        : `No paused agent with task_id "${options.resume}" — it may belong to an earlier session. Spawn a new one with the full task.`,
+      turns: 0,
+      toolCalls: 0,
+      files: [],
+      ok: false,
+      error: earlier ? 'wrong-agent' : 'unknown-task',
+      durationMs: 0,
+    }
+  }
+
   // Build a registry holding only this agent's tools.
   const scoped = new Registry()
   const allowed: Tool[] =
@@ -127,7 +175,9 @@ export async function spawnSubagent(
   // parallel cannot land in each other's edits. Read-only agents — the ones
   // `spawn` is mostly used for — run in place: a worktree costs a git
   // operation and a directory copy to isolate work that touches nothing.
-  const worktree = (await needsIsolation(definition, options))
+  // A resumed run goes on in place: its worktree, if it had one, was
+  // merged or removed when it stopped.
+  const worktree = !earlier && (await needsIsolation(definition, options))
     ? await createWorktree(options.cwd, agentName)
     : undefined
 
@@ -137,14 +187,16 @@ export async function spawnSubagent(
   const workingDir = worktree?.path ?? options.cwd
   const client = clientFor(options, definition.role, definition.model)
 
-  const store = new EventStore()
-  store.append({
-    type: 'session_start',
-    at: started,
-    cwd: workingDir,
-    mode: `subagent:${agentName}`,
-    model: client.resolve(definition.role).modelId,
-  })
+  const store = earlier?.store ?? new EventStore()
+  if (!earlier) {
+    store.append({
+      type: 'session_start',
+      at: started,
+      cwd: workingDir,
+      mode: `subagent:${agentName}`,
+      model: client.resolve(definition.role).modelId,
+    })
+  }
   store.append({ type: 'user_message', at: started, text: task })
 
   const toolContext: ToolContext = {
@@ -159,10 +211,16 @@ export async function spawnSubagent(
     policy: options.policy,
   }
 
-  const systemPrompt = buildSubagentPrompt(
-    `${definition.instructions}\n\n### The task\n\n${task}`,
-    { mode: 'autonomous', cwd: workingDir, config: options.config, toolNames: scoped.names() },
-  )
+  // A resumed run keeps the prompt it started under, so its cached prefix
+  // and its sense of the original task both survive.
+  const systemPrompt =
+    earlier?.systemPrompt ??
+    buildSubagentPrompt(`${definition.instructions}\n\n### The task\n\n${task}`, {
+      mode: 'autonomous',
+      cwd: workingDir,
+      config: options.config,
+      toolNames: scoped.names(),
+    })
 
   let result
   let mergeNote = ''
@@ -178,7 +236,9 @@ export async function spawnSubagent(
       role: definition.role,
       signal: options.signal,
       maxTurns: definition.maxTurns,
-      onEvent: options.onEvent ? (event) => options.onEvent!(agentName, event) : undefined,
+      onEvent: options.onEvent ? (event) => options.onEvent!(agentName, event, options.spawnId) : undefined,
+      wrapUp:
+        'You have used all your turns. Do not call any more tools. Write your final report now from what you have found: what you are sure of, citing path:line, and what you did not get to check.',
     })
   } catch (error) {
     // The worktree is removed even when the run threw, or a failed spawn
@@ -192,18 +252,24 @@ export async function spawnSubagent(
     mergeNote = await serializeMerge(() => finishWorktree(worktree, finished.stopReason))
   }
 
+  const taskId = options.resume ?? `task_${started.toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  keep(taskId, { agent: agentName, store, systemPrompt })
+
   return {
+    taskId,
     agent: agentName,
     task,
     // The merge note rides on the report, because that is the only field the
     // parent agent reads. A worktree that failed to merge is something it has
     // to know about — silently returning a clean-looking report while the work
     // sits on an abandoned branch is the worst outcome here.
-    report: (result.text || '(the agent returned no text)') + mergeNote,
+    report: (result.text || '(the agent returned no text)') + limitNote(result) + mergeNote,
     turns: result.turns,
     toolCalls: result.toolCalls,
     files: result.files,
-    ok: result.stopReason === 'complete',
+    // A report written at the turn limit is still a report: the parent gets
+    // it as a result, told it may be partial, rather than as a failure.
+    ok: result.stopReason === 'complete' || (result.stopReason === 'max_turns' && result.text.length > 0 && result.error === undefined),
     error: result.error,
     durationMs: Date.now() - started,
   }
@@ -229,6 +295,7 @@ export async function fanOut(
 export function createSpawnTool(options: SpawnOptions): Tool<{
   agent: string
   task: string
+  task_id?: string
 }> {
   const roster = options.agents ?? AGENTS
   return {
@@ -248,6 +315,10 @@ export function createSpawnTool(options: SpawnOptions): Tool<{
       'Several `spawn` calls in the same response run in parallel. For independent',
       'questions — "how does auth work", "where are the migrations" — issue them together.',
       '',
+      'Every report ends with a `task_id`. Pass it back with the same agent to continue that',
+      'agent where it stopped — after it ran out of turns, or with a follow-up question — and it',
+      'keeps everything it already read; `task` is then its next instruction.',
+      '',
       'Available agents:',
       roster.map((agent) => `- \`${agent.name}\` — ${agent.purpose}`).join('\n'),
     ].join('\n'),
@@ -264,6 +335,10 @@ export function createSpawnTool(options: SpawnOptions): Tool<{
           description:
             'The complete task. Include every detail the agent needs — it cannot see this conversation.',
         },
+        task_id: {
+          type: 'string',
+          description: 'Continue an earlier agent: the task_id from its report. Omit to start a new one.',
+        },
       },
       required: ['agent', 'task'],
     },
@@ -275,9 +350,13 @@ export function createSpawnTool(options: SpawnOptions): Tool<{
         cwd: context.cwd,
         signal: context.signal,
         depth: (options.depth ?? 0) + 1,
+        spawnId: context.callId,
+        resume: args.task_id,
       })
 
-      const stats = `[${result.agent}: ${result.turns} turns, ${result.toolCalls} tool calls, ${(result.durationMs / 1000).toFixed(1)}s]`
+      const stats =
+        `[${result.agent}: ${result.turns} turns, ${result.toolCalls} tool calls, ${(result.durationMs / 1000).toFixed(1)}s` +
+        (result.taskId ? ` · task_id: ${result.taskId}]` : ']')
       return {
         output: `${result.report}\n\n${stats}`,
         isError: !result.ok,
@@ -286,6 +365,12 @@ export function createSpawnTool(options: SpawnOptions): Tool<{
       }
     },
   }
+}
+
+function limitNote(result: { stopReason: string; error?: string; text: string }): string {
+  return result.stopReason === 'max_turns' && result.error === undefined && result.text
+    ? '\n\n(written at the turn limit — it may be incomplete; spawn again with a narrower task for what is missing)'
+    : ''
 }
 
 /**

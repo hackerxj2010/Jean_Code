@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { jeanHome } from '@jean/config'
+import { jeanHome, splitModelRef } from '@jean/config'
 import { contextWindow, estimateTokens } from '@jean/model'
 import type { Message } from '@jean/model'
 import { nativeReady } from '@jean/native'
@@ -26,6 +26,12 @@ export interface ContextStatus {
   shouldCompact: boolean
 }
 
+/** The window of `model` or `provider:model` — the provider picks the right catalog entry. */
+function windowOf(ref: string): number {
+  const { provider, modelId } = splitModelRef(ref)
+  return contextWindow(modelId, provider)
+}
+
 export function measureContext(
   messages: Message[],
   systemPrompt: string,
@@ -34,7 +40,7 @@ export function measureContext(
   /** Reserved headroom for the next response. */
   maxOutputTokens = 8192,
 ): ContextStatus {
-  const limit = contextWindow(modelId)
+  const limit = windowOf(modelId)
   const used = estimateTokens(systemPrompt) + messages.reduce((sum, m) => sum + messageTokens(m), 0)
   // The output has to fit too, so the usable window is smaller than the raw one.
   const usable = Math.max(limit - maxOutputTokens, Math.floor(limit * 0.5))
@@ -89,7 +95,7 @@ export async function measureContextExact(
     return measureContext(messages, systemPrompt, modelId, threshold, maxOutputTokens)
   }
 
-  const limit = contextWindow(modelId)
+  const limit = windowOf(modelId)
   const used = fixed + counts.reduce((sum, n) => sum + n, 0)
   const usable = Math.max(limit - maxOutputTokens, Math.floor(limit * 0.5))
   const ratio = used / usable

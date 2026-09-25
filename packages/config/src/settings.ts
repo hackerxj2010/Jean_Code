@@ -85,6 +85,19 @@ export function loadConfig(options: LoadOptions = {}): LoadedConfig {
     }
   }
 
+  // A whole config in one variable — for CI, containers, and wrappers that
+  // cannot write a file. It sits above the files and below `JEAN_*`.
+  if (env.JEAN_CONFIG_CONTENT?.trim()) {
+    try {
+      const inline = validate(parseJsonc(env.JEAN_CONFIG_CONTENT, 'JEAN_CONFIG_CONTENT'), 'JEAN_CONFIG_CONTENT')
+      config = merge(config, inline.value)
+      warnings.push(...inline.warnings)
+      sources.push({ path: '<JEAN_CONFIG_CONTENT>', kind: 'env' })
+    } catch (err) {
+      warnings.push(`could not read JEAN_CONFIG_CONTENT: ${errMessage(err)}`)
+    }
+  }
+
   const envLayer = configFromEnv(env)
   if (Object.keys(envLayer.config).length > 0) {
     config = merge(config, envLayer.config)
@@ -116,11 +129,19 @@ export function loadConfig(options: LoadOptions = {}): LoadedConfig {
     if (key) config.model = { ...config.model, apiKey: key }
   }
 
+  // Whether any layer named the model — if none did, the session may start
+  // on another provider that has a key (see `chooseModel` in @jean/model).
+  const defaults = defaultConfig()
+  const modelChosen =
+    config.model.modelId !== defaults.model.modelId ||
+    config.model.provider !== defaults.model.provider ||
+    config.agents.default.model !== undefined
+
   config.instructionFiles = [...config.instructionFiles, ...extraInstructions]
   config.telemetry = false
   config = resolveRoles(config)
 
-  return { config, sources, warnings }
+  return { config, sources, warnings, modelChosen }
 }
 
 function readConfigFile(path: string): { value: PartialConfig; warnings: string[] } | null {

@@ -111,14 +111,45 @@ fn exception_filters(available: &[Json], mode: &str) -> Vec<String> {
     }
 }
 
+/// `path` made absolute against `base` and, when it exists, in its long,
+/// canonical form without the `\\?\` prefix. Windows 8.3 names (`JEANBA~1`)
+/// defeat adapters: Node writes the `~` of a script's URL as `%7E`, so a
+/// breakpoint set on the short path never matches the script it names.
+fn full_path(path: impl Into<PathBuf>, base: &Path) -> PathBuf {
+    let path = path.into();
+    let path = if path.is_absolute() { path } else { base.join(path) };
+    let Ok(canonical) = std::fs::canonicalize(&path) else { return path };
+    let text = canonical.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        Some(_) => path,
+        None => canonical,
+    }
+}
+
+/// Adapters that debug a compiled binary.
+const NATIVE: [&str; 3] = ["codelldb", "lldb-dap", "gdb"];
+
+/// Adapters whose `console` output narrates the debugger itself.
+const QUIET_CONSOLE: [&str; 3] = ["js-debug", "codelldb", "lldb-dap"];
+
+/// The session, if its program is still there to act on.
+fn live(session: Session) -> Result<Session, String> {
+    let status = session.status();
+    if !status.finished() {
+        return Ok(session);
+    }
+    let code = session.exit_code().map(|code| format!(" with exit code {code}")).unwrap_or_default();
+    Err(format!("the program has ended{code} — `debug_output` shows what it printed; `debug_start` runs it again"))
+}
+
 fn parse_breakpoints(value: Option<&Json>, cwd: &Path) -> Vec<(PathBuf, Vec<BreakpointSpec>)> {
     value
         .map(|list| list.items().to_vec())
         .unwrap_or_default()
         .iter()
         .filter_map(|entry| {
-            let path = PathBuf::from(entry.str_at("path")?);
-            let path = if path.is_absolute() { path } else { cwd.join(path) };
+            let path = full_path(entry.str_at("path")?, cwd);
             let specs = entry.at("lines").or_else(|| entry.at("breakpoints")).map(|l| l.items().iter().filter_map(BreakpointSpec::parse).collect()).unwrap_or_default();
             Some((path, specs))
         })
@@ -223,9 +254,20 @@ impl Hub {
         Ok((command, None))
     }
 
+    /// Installs a missing adapter a session needs — when installs are on.
     fn install(&self, spec: &AdapterSpec, config: &Config) -> Result<PathBuf, String> {
+        if !config.auto_install {
+            let how = spec.install.as_ref().map(|install| install.describe()).unwrap_or_else(|| "no install recipe".into());
+            return Err(format!("{} is not installed ({how})", spec.name));
+        }
+        self.install_now(spec, config)
+    }
+
+    /// Installs an adapter now: asked for by name (`jean debug install`,
+    /// `jean setup`), which no `autoInstall` setting overrides.
+    fn install_now(&self, spec: &AdapterSpec, config: &Config) -> Result<PathBuf, String> {
         let install = spec.install.as_ref().ok_or_else(|| format!("{} is not installed", spec.name))?;
-        if !config.auto_install || !install.automatic() {
+        if !install.automatic() {
             return Err(format!("{} is not installed ({})", spec.name, install.describe()));
         }
         let mut log = Vec::new();
@@ -277,12 +319,17 @@ impl Hub {
 
     fn start(&self, params: &Json) -> Result<Json, String> {
         let config = self.config();
-        let program = params.str_at("program").map(|p| {
-            let path = PathBuf::from(p);
-            if path.is_absolute() { path } else { config.project_root.join(path) }
-        });
-        let cwd = params.str_at("cwd").map(PathBuf::from).unwrap_or_else(|| config.project_root.clone());
+        let program = params.str_at("program").map(|p| full_path(p, &config.project_root));
+        let cwd = full_path(params.str_at("cwd").map(PathBuf::from).unwrap_or_else(|| config.project_root.clone()), &config.project_root);
         let spec = self.choose(params, program.as_deref(), &cwd)?;
+        // A native debugger runs a binary: a source file or crate named as
+        // the program is built first, and its binary launched.
+        let launched = match program.as_deref() {
+            Some(source) if NATIVE.contains(&spec.id.as_str()) && params.str_at("address").is_none() && crate::build::needs_build(source) => {
+                Some(crate::build::build(source)?)
+            }
+            other => other.map(Path::to_path_buf),
+        };
         let id = format!("dbg-{}", self.next.fetch_add(1, Ordering::SeqCst));
 
         let session = match params.str_at("address") {
@@ -300,7 +347,7 @@ impl Hub {
                     extra.set("stopOnEntry", Json::Bool(true));
                 }
                 let env = params.at("env").cloned().unwrap_or(Json::Null);
-                let launch = substitute(&spec.launch_config(program.as_deref(), &args, &cwd, &env, &extra, python.as_deref()), "${cwd}", &cwd.to_string_lossy());
+                let launch = substitute(&spec.launch_config(launched.as_deref(), &args, &cwd, &env, &extra, python.as_deref()), "${cwd}", &cwd.to_string_lossy());
                 let request = params.str_at("request").unwrap_or_else(|| launch.str_at("request").unwrap_or("launch")).to_string();
                 session.launch_started(&request, launch, params, &cwd)?;
                 session
@@ -324,7 +371,11 @@ impl Hub {
         if let Some(entry) = lock(&self.sessions).get_mut(id) {
             entry.cursor = next;
         }
-        let text: String = lines.iter().map(|(_, text)| text.as_str()).collect();
+        // These adapters' console lines — the command they ran, "Launched
+        // process", source-map warnings — are about the debugger, not the
+        // program; `debug_output` still has them.
+        let quiet = QUIET_CONSOLE.contains(&session.adapter());
+        let text: String = lines.iter().filter(|(category, _)| !(quiet && category == "console")).map(|(_, text)| text.as_str()).collect();
         let tail: String = text.chars().rev().take(6000).collect::<Vec<_>>().into_iter().rev().collect();
         snapshot.set("output", string(tail));
         snapshot.set("session", string(id));
@@ -334,10 +385,7 @@ impl Hub {
     fn breakpoints(&self, params: &Json) -> Result<Json, String> {
         let session = self.session(params)?;
         let path = params.str_at("path").ok_or("`path` is required")?;
-        let path = match PathBuf::from(path) {
-            absolute if absolute.is_absolute() => absolute,
-            relative => self.config().project_root.join(relative),
-        };
+        let path = full_path(path, &self.config().project_root);
         let given: Vec<BreakpointSpec> = params.at("lines").map(|l| l.items().iter().filter_map(BreakpointSpec::parse).collect()).unwrap_or_default();
         // DAP sets a file's breakpoints as a whole; `add` and `remove` edit
         // the set the session already holds, so the caller need not repeat it.
@@ -383,7 +431,7 @@ impl Hub {
     fn control(&self, params: &Json) -> Result<Json, String> {
         let session = self.session(params)?;
         let action = params.str_at("action").ok_or("`action` is required")?;
-        let target = session.target();
+        let target = live(session.target())?;
         target.control(action, params.i64_at("thread")).map_err(err)?;
         if action != "pause" {
             // Let the stop from the previous position clear before waiting.
@@ -414,21 +462,24 @@ impl Hub {
     }
 
     fn evaluate(&self, params: &Json) -> Result<Json, String> {
-        let session = self.session(params)?.target();
+        let session = live(self.session(params)?.target())?;
         let expression = params.str_at("expression").ok_or("`expression` is required")?;
         let frame = self.frame_id(&session, params);
-        let context = params.str_at("context").unwrap_or("repl");
+        // A native debugger's REPL takes debugger commands; an expression
+        // is evaluated as a watch.
+        let native = NATIVE.contains(&session.adapter());
+        let context = params.str_at("context").unwrap_or(if native { "watch" } else { "repl" });
         session.evaluate(expression, frame, context, params.u32_at("depth").unwrap_or(1)).map_err(err)
     }
 
     fn variables(&self, params: &Json) -> Result<Json, String> {
-        let session = self.session(params)?.target();
+        let session = live(self.session(params)?.target())?;
         let reference = params.i64_at("reference").ok_or("`reference` is required")?;
         session.variables(reference, params.u32_at("depth").unwrap_or(1), params.u32_at("limit").unwrap_or(100) as usize).map_err(err)
     }
 
     fn set_variable(&self, params: &Json) -> Result<Json, String> {
-        let session = self.session(params)?.target();
+        let session = live(self.session(params)?.target())?;
         let reference = params.i64_at("reference").ok_or("`reference` is required")?;
         let name = params.str_at("name").ok_or("`name` is required")?;
         let value = params.str_at("value").ok_or("`value` is required")?;
@@ -436,12 +487,12 @@ impl Hub {
     }
 
     fn threads(&self, params: &Json) -> Result<Json, String> {
-        let session = self.session(params)?.target();
+        let session = live(self.session(params)?.target())?;
         Ok(array(session.threads().map_err(err)?.into_iter().map(|(id, name)| object([("id", int(id)), ("name", string(name))]))))
     }
 
     fn stack(&self, params: &Json) -> Result<Json, String> {
-        let session = self.session(params)?.target();
+        let session = live(self.session(params)?.target())?;
         let thread = params.i64_at("thread").or_else(|| session.stopped_thread()).ok_or("no thread")?;
         Ok(array(session.stack(thread, params.u32_at("levels").unwrap_or(50)).map_err(err)?))
     }
@@ -508,7 +559,7 @@ impl Hub {
     fn configure(&self, params: &Json) -> Result<Json, String> {
         let mut config = lock(&self.config);
         if let Some(root) = params.str_at("projectRoot") {
-            config.project_root = PathBuf::from(root);
+            config.project_root = full_path(root, &std::env::current_dir().unwrap_or_default());
         }
         if let Some(adapters) = params.at("adapters") {
             config.user_adapters = adapters.clone();
@@ -549,7 +600,7 @@ impl Hub {
             "install" => {
                 let id = params.str_at("id").ok_or("`id` is required")?;
                 let spec = self.adapters().into_iter().find(|spec| spec.id == id).ok_or_else(|| format!("no adapter `{id}`"))?;
-                let path = self.install(&spec, &self.config())?;
+                let path = self.install_now(&spec, &self.config())?;
                 Ok(object([("id", string(id)), ("path", string(path.to_string_lossy()))]))
             }
             "start" => self.start(params),

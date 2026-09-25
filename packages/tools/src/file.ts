@@ -10,7 +10,10 @@ import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { ToolError } from './types.ts'
 import {
   describeDatabase,
+  extractPdfText,
   isArchive,
+  parseSshPath,
+  readSsh,
   parseNotebook,
   readArchive,
   readCsv,
@@ -100,11 +103,35 @@ function isBinary(buffer: Buffer): boolean {
   return buffer.subarray(0, 8192).includes(0)
 }
 
+/**
+ * Something `read` can read that is not a local file: a web page, a pull
+ * request. Registered by the packages that can reach them — `@jean/search`
+ * for URLs, `@jean/github` for `pr://` and `issue://` — which this package
+ * cannot import without a cycle.
+ */
+export interface ReadSource {
+  name: string
+  matches(path: string): boolean
+  read(path: string, args: { offset?: number; limit?: number }, context: ToolContext): Promise<ToolResult>
+}
+
+const readSources = new Map<string, ReadSource>()
+
+/** Adds a source `read` consults before the file system; a name registers once. */
+export function registerReadSource(source: ReadSource): void {
+  readSources.set(source.name, source)
+}
+
 export const readTool: Tool<{ path: string; offset?: number; limit?: number; raw?: boolean }> = {
   name: 'read',
   risk: 'read',
   description: [
     'Read a file, or list a directory.',
+    '',
+    'Also reads what is not a local file: a web page (`https://…`), a pull request or',
+    'issue (`pr://123`, `issue://owner/repo/45`), a file on another machine over SSH',
+    '(`ssh://user@host/path` or `user@host:path`), and a PDF\'s text (`offset`/`limit`',
+    'count pages there).',
     '',
     'Each line comes back as `<line number> h:<anchor> │ <text>`. The line number is for',
     'orientation (`offset`, `grep`, and the `lsp_*` tools all speak it); the anchor is a',
@@ -130,6 +157,12 @@ export const readTool: Tool<{ path: string; offset?: number; limit?: number; raw
   summarize: (args) => `read ${args.path}`,
 
   async execute(args, context): Promise<ToolResult> {
+    for (const source of readSources.values()) {
+      if (source.matches(args.path)) return source.read(args.path, args, context)
+    }
+    const remote = parseSshPath(args.path)
+    if (remote) return readRemote(args.path, remote, args, context)
+
     // Saved command output lives outside the project, and is the one place
     // outside it `read` may go: the shell tool points the agent there.
     const absolute =
@@ -159,7 +192,7 @@ export const readTool: Tool<{ path: string; offset?: number; limit?: number; raw
 
     // Formats that are not usefully readable as text get a dedicated reader.
     // Each is a real file an agent meets often, and raw bytes tell it nothing.
-    const special = await readSpecialFormat(absolute, shown, info.size)
+    const special = await readSpecialFormat(absolute, shown, info.size, args)
     if (special) {
       context.session.readFiles.add(absolute)
       return special
@@ -662,6 +695,65 @@ export function applyUnifiedDiff(
   return { content: out.join('\n'), hunks }
 }
 
+/** Recordings `pi-voice` describes — itself, or through ffmpeg. */
+const AUDIO = ['.wav', '.flac', '.aiff', '.aif', '.aifc', '.au', '.snd', '.mp3', '.ogg', '.oga', '.opus', '.m4a', '.webm', '.aac']
+
+/** The most text one PDF read returns; the rest is paged with `offset`. */
+const PDF_MAX_CHARS = 60_000
+
+/** A PDF's text, page by page; `offset` and `limit` count pages. */
+async function readPdf(absolute: string, shown: string, args: { offset?: number; limit?: number }): Promise<ToolResult> {
+  const { pages, via } = extractPdfText(await readFile(absolute), absolute)
+  const first = Math.max(1, args.offset ?? 1)
+  const wanted = pages.slice(first - 1, args.limit ? first - 1 + args.limit : undefined)
+  const out: string[] = []
+  let chars = 0
+  let shownPages = 0
+  for (const [index, text] of wanted.entries()) {
+    const block = `--- page ${first + index} ---\n${text || '(no text on this page — it may be an image)'}`
+    if (chars + block.length > PDF_MAX_CHARS && shownPages > 0) break
+    out.push(block)
+    chars += block.length
+    shownPages++
+  }
+  const last = first + shownPages - 1
+  const more = last < pages.length ? `\n\n[pages ${last + 1}–${pages.length} not shown — read again with offset: ${last + 1}]` : ''
+  const empty = pages.every((page) => !page.trim())
+  return {
+    output: `${shown} — PDF, ${pages.length} page${pages.length === 1 ? '' : 's'}${via === 'pdftotext' ? ' (pdftotext)' : ''}${empty ? '; no extractable text, so probably scanned images' : ''}\n\n${out.join('\n\n')}${more}`,
+    display: { kind: 'pdf', pages: pages.length },
+  }
+}
+
+/** A file or directory on another machine, through the system `ssh`. */
+async function readRemote(
+  path: string,
+  target: import('@jean/readers').SshTarget,
+  args: { offset?: number; limit?: number },
+  context: ToolContext,
+): Promise<ToolResult> {
+  let result: Awaited<ReturnType<typeof readSsh>>
+  try {
+    result = await readSsh(target, { signal: context.signal })
+  } catch (error) {
+    throw new ToolError(
+      `Could not read ${path} over SSH: ${error instanceof Error ? error.message : String(error)}`,
+      'SSH runs in batch mode: the host needs key-based login (an agent, or a key in ~/.ssh) and a known host key.',
+    )
+  }
+  if (result.directory) return { output: `${path}/\n${result.text.trimEnd()}`, display: { kind: 'directory', path } }
+  const lines = result.text.split('\n')
+  const offset = Math.max(1, args.offset ?? 1)
+  const slice = lines.slice(offset - 1, offset - 1 + Math.max(1, args.limit ?? DEFAULT_LINE_LIMIT))
+  const width = String(offset + slice.length).length
+  const numbered = slice.map((text, i) => `${String(offset + i).padStart(width)}  ${text}`).join('\n')
+  const cut = result.truncated ? '\n\n[the file is larger than 512 KB; only its start was fetched]' : ''
+  return {
+    output: `${path} (remote, ${lines.length} lines — edit it on the host, not with \`edit\`)\n${numbered}${cut}`,
+    display: { kind: 'remote-file', path },
+  }
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -683,10 +775,13 @@ async function readSpecialFormat(
   absolute: string,
   shown: string,
   size: number,
+  args: { offset?: number; limit?: number } = {},
 ): Promise<ToolResult | undefined> {
   const lower = absolute.toLowerCase()
 
   try {
+    if (lower.endsWith('.pdf')) return readPdf(absolute, shown, args)
+
     if (lower.endsWith('.ipynb')) {
       const { cells, language } = parseNotebook(await readFile(absolute, 'utf8'))
       const code = cells.filter((c) => c.type === 'code').length
@@ -720,9 +815,9 @@ async function readSpecialFormat(
       }
     }
 
-    // A WAV is read by `pi-voice`: what an agent can use from a recording is
+    // A recording is read by `pi-voice`: what an agent can use from it is
     // its shape — length, loudness, where the speech is — not its bytes.
-    if (lower.endsWith('.wav')) {
+    if (AUDIO.some((extension) => lower.endsWith(extension))) {
       const native = await nativeReady()
       if (native) {
         const audio = await native.voiceProbe(absolute)
@@ -733,7 +828,7 @@ async function readSpecialFormat(
             : audio.speech.map((s) => `  ${seconds(s.startMs)} – ${seconds(s.endMs)}`).join('\n')
         return {
           output: [
-            `${shown} — WAV audio, ${seconds(audio.durationMs)}, ${audio.sampleRate} Hz, ${audio.channels} channel${audio.channels === 1 ? '' : 's'}, ${audio.bitsPerSample}-bit`,
+            `${shown} — ${audio.format === 'ffmpeg' ? 'audio (decoded by ffmpeg)' : `${audio.format.toUpperCase()} audio`}, ${seconds(audio.durationMs)}, ${audio.sampleRate} Hz, ${audio.channels} channel${audio.channels === 1 ? '' : 's'}, ${audio.bitsPerSample}-bit`,
             `Level: rms ${audio.rms.toFixed(3)}, peak ${audio.peak.toFixed(3)}`,
             `Speech (${audio.speech.length} segment${audio.speech.length === 1 ? '' : 's'}):`,
             speech,

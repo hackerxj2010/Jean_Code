@@ -1,3 +1,4 @@
+import { catalogIdOf, liveCatalog } from './models-dev.ts'
 import type { ModelInfo } from './types.ts'
 
 /**
@@ -86,21 +87,51 @@ const UNKNOWN_DEFAULTS = {
   supportsThinking: false,
 }
 
-/** Everything in the catalog. */
+/** Everything in the bundled catalog. */
 export function allModels(): ModelInfo[] {
   return [...CATALOG]
 }
 
 /**
- * Looks up a model id.
- *
- * Ids are matched loosely: `claude-sonnet-4.5` finds `anthropic/claude-sonnet-4.5`,
- * because OpenRouter-style vendor prefixes are noise when the user is typing.
+ * A model its provider will not serve to Jean: OpenCode Zen and Go keep
+ * their free models for the OpenCode app (`FreeTierError`, key or not).
  */
-export function findModel(id: string): ModelInfo | undefined {
+export function reservedModel(provider: string, model: Pick<ModelInfo, 'id' | 'free'>): boolean {
+  if (provider !== 'opencode' && provider !== 'opencode-go') return false
+  return model.free === true || /-free$|^big-pickle$/.test(model.id)
+}
+
+/**
+ * Every model a provider serves: the live catalog's list when it has been
+ * fetched, the bundled one otherwise — whose ids are OpenRouter's. Models
+ * the provider keeps for another client are left out.
+ */
+export function modelsOf(provider: string): ModelInfo[] {
+  const live = liveCatalog()?.providers[catalogIdOf(provider)]
+  if (live) return Object.values(live.models).filter((model) => !reservedModel(provider, model))
+  return provider === 'openrouter' ? [...CATALOG] : []
+}
+
+/**
+ * Looks up a model id, in the provider's own list first when one is named.
+ *
+ * Otherwise ids are matched loosely: `claude-sonnet-4.5` finds
+ * `anthropic/claude-sonnet-4.5`, because OpenRouter-style vendor prefixes
+ * are noise when the user is typing.
+ */
+export function findModel(id: string, provider?: string): ModelInfo | undefined {
   const needle = id.toLowerCase()
+  const live = liveCatalog()
+  if (provider && live) {
+    const models = live.providers[catalogIdOf(provider)]?.models
+    const hit = models?.[id] ?? Object.values(models ?? {}).find((entry) => entry.id.toLowerCase() === needle)
+    if (hit) return hit
+  }
   const exact = CATALOG.find((entry) => entry.id.toLowerCase() === needle)
   if (exact) return exact
+  // `vendor/model` is how OpenRouter names models; its list is the widest.
+  const routed = live?.providers.openrouter?.models[id]
+  if (routed) return routed
   const bare = needle.includes('/') ? needle.slice(needle.lastIndexOf('/') + 1) : needle
   return CATALOG.find((entry) => {
     const entryBare = entry.id.slice(entry.id.lastIndexOf('/') + 1).toLowerCase()
@@ -110,7 +141,7 @@ export function findModel(id: string): ModelInfo | undefined {
 
 /** Model metadata, filled with safe defaults when the id is unknown. */
 export function modelInfo(id: string, provider = 'openrouter'): ModelInfo {
-  const known = findModel(id)
+  const known = findModel(id, provider)
   if (known) return known
   return {
     id,
@@ -121,15 +152,26 @@ export function modelInfo(id: string, provider = 'openrouter'): ModelInfo {
 }
 
 /** Context window for a model id — the number auto-compaction is measured against. */
-export function contextWindow(id: string): number {
-  return modelInfo(id).contextWindow
+export function contextWindow(id: string, provider?: string): number {
+  return modelInfo(id, provider).contextWindow
 }
 
-/** Estimated USD cost of a completed request. */
-export function estimateCost(id: string, inputTokens: number, outputTokens: number): number {
-  const info = findModel(id)
-  if (!info?.inputCost || !info.outputCost) return 0
-  return (inputTokens * info.inputCost + outputTokens * info.outputCost) / 1_000_000
+/**
+ * Estimated USD cost of a completed request. Tokens read from the prompt
+ * cache are billed at the cache rate when the catalog gives one.
+ */
+export function estimateCost(
+  id: string,
+  inputTokens: number,
+  outputTokens: number,
+  provider?: string,
+  cacheReadTokens = 0,
+): number {
+  const info = findModel(id, provider)
+  if (!info || info.free || !info.inputCost || !info.outputCost) return 0
+  const cached = info.cacheReadCost === undefined ? 0 : Math.min(cacheReadTokens, inputTokens)
+  const fresh = inputTokens - cached
+  return (fresh * info.inputCost + cached * (info.cacheReadCost ?? 0) + outputTokens * info.outputCost) / 1_000_000
 }
 
 /**
@@ -146,14 +188,14 @@ export function estimateTokens(text: string): number {
 }
 
 /** Models that can be offered tools — everything current, but checked anyway. */
-export function supportsTools(id: string): boolean {
-  return modelInfo(id).supportsTools
+export function supportsTools(id: string, provider?: string): boolean {
+  return modelInfo(id, provider).supportsTools
 }
 
-export function supportsVision(id: string): boolean {
-  return modelInfo(id).supportsVision
+export function supportsVision(id: string, provider?: string): boolean {
+  return modelInfo(id, provider).supportsVision
 }
 
-export function supportsThinking(id: string): boolean {
-  return modelInfo(id).supportsThinking
+export function supportsThinking(id: string, provider?: string): boolean {
+  return modelInfo(id, provider).supportsThinking
 }

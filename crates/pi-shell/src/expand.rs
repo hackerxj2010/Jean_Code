@@ -20,6 +20,9 @@ pub struct Context<'a> {
     pub last_status: i32,
     /// Positional parameters, for `$1`, `$@`.
     pub positional: &'a [String],
+    /// No field splitting and no globbing — inside `[[ ]]` and for `case`
+    /// patterns, where `*.rs` is a pattern to match, not files to list.
+    pub noglob: bool,
 }
 
 /// Expands one word into zero or more fields.
@@ -73,25 +76,38 @@ where
                     current.push_str(&expanded);
                 }
 
-                Piece::Command(command) => {
+                Piece::Command(command) | Piece::QuotedCommand(command) => {
                     let output = run_command(command)?;
                     // Trailing newlines are stripped, as every shell does —
                     // otherwise `x=$(pwd)` carries a newline into every use.
-                    current.push_str(output.trim_end_matches('\n'));
+                    let output = output.trim_end_matches('\n');
+                    if matches!(piece, Piece::QuotedCommand(_)) {
+                        quoted_anywhere = true;
+                    } else if output.contains(|c: char| c == ' ' || c == '\t' || c == '\n') {
+                        // Unquoted, its words are separate arguments:
+                        // `for f in $(ls)` loops over each file.
+                        split_points.push(current.len());
+                    }
+                    current.push_str(output);
                 }
 
                 Piece::Arithmetic(expression) => {
-                    let resolved = expand_variables(expression, context)?;
-                    let output = pi_builtins::data::bc(&resolved);
-                    if !output.is_ok() {
-                        return Err(output.stderr.trim().to_string());
-                    }
-                    current.push_str(output.stdout.trim());
+                    // Substitutions and `$x` references first; bare names are
+                    // the evaluator's.
+                    let substituted = substitute_commands(expression, run_command)?;
+                    let resolved = expand_variables(&substituted, context)?;
+                    let value = crate::arith::evaluate(&resolved, &mut crate::arith::ReadOnly(context.variables))?;
+                    current.push_str(&value.to_string());
                 }
             }
         }
 
         if current.is_empty() && !quoted_anywhere {
+            continue;
+        }
+
+        if context.noglob {
+            fields.push(current);
             continue;
         }
 
@@ -108,7 +124,8 @@ where
         // Stage 3: globbing. A pattern that matches nothing stays literal,
         // which is what bash does without `nullglob`.
         for field in split {
-            if globbable || field.contains(['*', '?']) {
+            // Only a pattern that was unquoted globs: `'*'` is an asterisk.
+            if globbable {
                 let matched = expand_glob(&field, context.cwd);
                 if matched.is_empty() {
                     fields.push(field);
@@ -124,6 +141,46 @@ where
     Ok(fields)
 }
 
+/// Replaces each `$(...)` in `text` with its command's output, as arithmetic
+/// needs before it can evaluate `$(( $(wc -l < f) + 1 ))`.
+fn substitute_commands<F>(text: &str, run_command: &mut F) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<String, String>,
+{
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && chars.get(i + 1) == Some(&'(') && chars.get(i + 2) != Some(&'(') {
+            let mut depth = 0;
+            let mut end = i + 1;
+            while end < chars.len() {
+                match chars[end] {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                end += 1;
+            }
+            if end >= chars.len() {
+                return Err("unterminated `$(` in arithmetic".to_string());
+            }
+            let command: String = chars[i + 2..end].iter().collect();
+            out.push_str(run_command(&command)?.trim());
+            i = end + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    Ok(out)
+}
+
 /// The word's literal shape, for brace expansion to work on.
 fn word_shape(word: &Word) -> String {
     word.pieces
@@ -132,7 +189,7 @@ fn word_shape(word: &Word) -> String {
             Piece::Bare(text) => text.clone(),
             // Quoted text cannot contain a brace expansion, so it is masked out
             // with a placeholder that the reshape puts back.
-            Piece::Quoted(_) | Piece::Literal(_) | Piece::Command(_) | Piece::Arithmetic(_) => {
+            Piece::Quoted(_) | Piece::Literal(_) | Piece::Command(_) | Piece::QuotedCommand(_) | Piece::Arithmetic(_) => {
                 "\u{0}".to_string()
             }
         })
@@ -550,6 +607,7 @@ mod tests {
             home: Path::new("/home/jean"),
             last_status: 0,
             positional,
+            noglob: false,
         }
     }
 

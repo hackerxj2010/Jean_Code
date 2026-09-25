@@ -1,6 +1,6 @@
 [package]
 name = "pi-iso"
-description = "Task isolation via APFS clones, btrfs/zfs reflinks, overlayfs, projfs"
+description = "Task isolation: copy-on-write views (APFS clonefile, btrfs/XFS reflink, ReFS block cloning, or copies) and three-way merge back"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

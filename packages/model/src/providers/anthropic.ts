@@ -51,13 +51,22 @@ interface MessagesResponse {
 }
 
 export class AnthropicProvider implements Provider {
-  readonly name = 'anthropic'
-  readonly label = 'Anthropic'
+  readonly name: string
+  readonly label: string
 
-  constructor(private readonly options: ProviderOptions = {}) {}
+  constructor(private readonly options: ProviderOptions = {}) {
+    this.name = options.name ?? 'anthropic'
+    this.label = options.label ?? 'Anthropic'
+  }
 
   private key(): string | undefined {
-    return cleanKey(this.options.apiKey) ?? cleanKey(process.env.ANTHROPIC_API_KEY)
+    const explicit = cleanKey(this.options.apiKey)
+    if (explicit) return explicit
+    for (const name of this.options.keyEnv ?? ['ANTHROPIC_API_KEY']) {
+      const value = cleanKey(process.env[name])
+      if (value) return value
+    }
+    return undefined
   }
 
   isConfigured(): boolean {
@@ -102,6 +111,7 @@ export class AnthropicProvider implements Provider {
         description: tool.description,
         input_schema: tool.parameters,
       }))
+      if (request.toolChoice === 'none') body.tool_choice = { type: 'none' }
     }
 
     // Extended thinking has a floor of 1024 budget tokens and must leave room

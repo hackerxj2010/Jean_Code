@@ -245,18 +245,51 @@ export class Browser {
     return this.connection.send<T>(method, params, this.sessionId)
   }
 
-  /** Navigates and waits for the load event. */
+  /**
+   * Navigates and waits for the new document's load event. A `load` from the
+   * document being left — the start page finishing late, say — does not
+   * count: only one fired after the main frame committed this navigation.
+   * A page still loading at the timeout is left as it is; most of it is
+   * usually readable by then.
+   */
   async goto(url: string, timeoutMs = 30_000): Promise<void> {
-    if (!this.connection) throw new CdpError('the browser is not started', 'Page.navigate')
+    const connection = this.connection
+    if (!connection) throw new CdpError('the browser is not started', 'Page.navigate')
 
-    // The listener is attached before navigating: a fast page fires `load`
-    // before a listener attached afterwards would exist.
-    const loaded = this.connection.waitFor('Page.loadEventFired', timeoutMs).catch(() => undefined)
+    // Listening starts before navigating: a fast page commits and fires
+    // `load` before a listener attached afterwards would exist.
+    let current: string | undefined
+    const loaded = new Set<string>()
+    let wake = () => {}
+    const stop = connection.onEvent((event) => {
+      if (event.sessionId !== this.sessionId) return
+      if (event.method === 'Page.frameNavigated') {
+        const frame = event.params.frame as { parentId?: string; loaderId?: string } | undefined
+        if (frame && !frame.parentId) current = frame.loaderId
+      } else if (event.method === 'Page.loadEventFired' && current) {
+        loaded.add(current)
+        wake()
+      }
+    })
 
-    const result = await this.send<{ errorText?: string }>('Page.navigate', { url })
-    if (result.errorText) throw new CdpError(`navigation failed: ${result.errorText}`, 'Page.navigate')
-
-    await loaded
+    try {
+      const result = await this.send<{ errorText?: string; loaderId?: string }>('Page.navigate', { url })
+      if (result.errorText) throw new CdpError(`navigation failed: ${result.errorText}`, 'Page.navigate')
+      // Only the fragment changed: the document stays, and no load follows.
+      const loader = result.loaderId
+      if (!loader) return
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, timeoutMs)
+        wake = () => {
+          if (!loaded.has(loader)) return
+          clearTimeout(timer)
+          resolve()
+        }
+        wake()
+      })
+    } finally {
+      stop()
+    }
   }
 
   /** Evaluates an expression in the page and returns its value. */

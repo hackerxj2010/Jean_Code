@@ -398,11 +398,11 @@ pub fn tokens_count(request: &Request, state: &mut State) -> Result<Json, String
 // ---- pi-voice --------------------------------------------------------------
 
 /// Describes an audio file: format, length, loudness, and where the speech is.
+/// WAV, FLAC, AIFF, and `.au` are decoded here; anything else through ffmpeg.
 pub fn voice_probe(request: &Request) -> Result<Json, String> {
     let path = request.string("path")?;
-    let bytes = std::fs::read(path).map_err(|error| format!("{path}: {error}"))?;
-    let format = pi_voice::wav::probe(&bytes)?;
-    let frame = pi_voice::decode(&bytes)?;
+    let decoded = pi_voice::open(Path::new(path))?;
+    let frame = decoded.frame;
     let mono = frame.to_mono();
 
     // Speech segments, from the turn detector over 20 ms windows.
@@ -435,9 +435,10 @@ pub fn voice_probe(request: &Request) -> Result<Json, String> {
     }
 
     Ok(object(vec![
-        ("channels", Json::Number(f64::from(format.channels))),
-        ("sampleRate", Json::Number(f64::from(format.sample_rate))),
-        ("bitsPerSample", Json::Number(f64::from(format.bits_per_sample))),
+        ("format", Json::String(decoded.format.to_string())),
+        ("channels", Json::Number(f64::from(frame.channels))),
+        ("sampleRate", Json::Number(f64::from(frame.sample_rate))),
+        ("bitsPerSample", Json::Number(f64::from(decoded.bits_per_sample))),
         ("durationMs", Json::Number(frame.duration_ms() as f64)),
         ("rms", Json::Number(f64::from(mono.rms()))),
         ("peak", Json::Number(f64::from(mono.peak()))),
@@ -450,14 +451,52 @@ pub fn voice_probe(request: &Request) -> Result<Json, String> {
 pub fn voice_prepare(request: &Request) -> Result<Json, String> {
     let path = request.string("path")?;
     let output = request.string("output")?;
-    let bytes = std::fs::read(path).map_err(|error| format!("{path}: {error}"))?;
-    let prepared = pi_voice::decode(&bytes)?.for_transcription();
+    let prepared = pi_voice::open(Path::new(path))?.frame.for_transcription();
     std::fs::write(output, pi_voice::encode(&prepared)).map_err(|error| format!("{output}: {error}"))?;
     Ok(object(vec![
         ("output", Json::String(output.to_string())),
         ("durationMs", Json::Number(prepared.duration_ms() as f64)),
         ("sampleRate", Json::Number(f64::from(prepared.sample_rate))),
     ]))
+}
+
+/// Records from the microphone until the speaker finishes (or `maxMs`), and
+/// writes it as a 16 kHz mono WAV to `output`.
+pub fn voice_record(request: &Request) -> Result<Json, String> {
+    let output = request.string("output")?;
+    let defaults = pi_voice::external::Capture::default();
+    let number = |key: &str, fallback: u32| match request.params.get(key) {
+        Some(Json::Number(value)) if *value > 0.0 => *value as u32,
+        _ => fallback,
+    };
+    let options = pi_voice::external::Capture {
+        max_ms: number("maxMs", defaults.max_ms),
+        wait_ms: number("waitMs", defaults.wait_ms),
+        until_silence: request.bool("untilSilence", true),
+    };
+    let recording = pi_voice::external::record(options)?;
+    std::fs::write(output, pi_voice::encode(&recording.frame)).map_err(|error| format!("{output}: {error}"))?;
+    Ok(object(vec![
+        ("output", Json::String(output.to_string())),
+        ("durationMs", Json::Number(recording.frame.duration_ms() as f64)),
+        ("recorder", Json::String(recording.recorder)),
+        ("heardSpeech", Json::Bool(recording.heard_speech)),
+    ]))
+}
+
+/// The microphone recorders this machine has, most suitable first.
+pub fn voice_recorders() -> Json {
+    Json::Array(
+        pi_voice::external::recorders()
+            .into_iter()
+            .map(|recorder| {
+                object(vec![
+                    ("name", Json::String(recorder.name)),
+                    ("program", Json::String(recorder.program.to_string_lossy().to_string())),
+                ])
+            })
+            .collect(),
+    )
 }
 
 // ---- pi-mnemopi, the full backend ------------------------------------------

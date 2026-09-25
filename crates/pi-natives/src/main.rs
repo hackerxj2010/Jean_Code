@@ -28,6 +28,7 @@
 //! Every method has a TypeScript fallback, so this binary is an optimisation,
 //! never a requirement.
 
+mod cli;
 mod handlers;
 mod ops;
 mod protocol;
@@ -44,6 +45,13 @@ fn write(out: &Mutex<Stdout>, response: &str) -> bool {
 }
 
 fn main() {
+    // `--builtin <name> args...`: one coreutil as a command, for the shims on
+    // the shell's PATH (see `cli`). Anything else is the bridge.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("--builtin") {
+        std::process::exit(cli::run(&arguments[1..]));
+    }
+
     let stdin = BufReader::new(std::io::stdin());
     let out = Arc::new(Mutex::new(std::io::stdout()));
     // Shell sessions, isolated views, and power assertions outlive the call

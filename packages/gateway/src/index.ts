@@ -37,4 +37,16 @@ export {
   stripQuotedReply,
   type EmailOptions,
 } from './adapters/email.ts'
-export { Gateway, type GatewayOptions, type PlatformConfig } from './gateway.ts'
+export { MatrixAdapter, type MatrixOptions } from './adapters/matrix.ts'
+export { SignalAdapter, type SignalOptions } from './adapters/signal.ts'
+export { SmsAdapter, twilioSignature, type SmsOptions } from './adapters/sms.ts'
+export { verifyMetaSignature, WhatsAppAdapter, type WhatsAppOptions } from './adapters/whatsapp.ts'
+export { listen as listenWebhook, type WebhookRequest, type WebhookResponse } from './adapters/webhook.ts'
+export {
+  createAdapter,
+  Gateway,
+  PLATFORMS,
+  type GatewayOptions,
+  type PlatformConfig,
+  type PlatformName,
+} from './gateway.ts'

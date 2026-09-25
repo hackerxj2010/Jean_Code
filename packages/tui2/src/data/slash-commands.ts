@@ -39,13 +39,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   {
     id: 'connect',
     label: 'connect',
-    description: 'Providers and their keys: status, or /connect <provider> <key>',
+    description: 'Connect a provider: OpenCode Zen, Anthropic, OpenAI, Google, and 200+ more',
     aliases: ['providers'],
   },
   {
     id: 'models',
     label: 'models',
-    description: 'List models, or /models <id> to switch this session',
+    description: 'Pick a model: favorites, recent, every connected provider — or /models provider:model',
     aliases: ['model', 'switch-model', 'use-model'],
   },
   {
@@ -80,7 +80,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     id: 'history',
     label: 'history',
     description: 'Browse and resume past conversations',
-    aliases: ['chats'],
+    aliases: ['chats', 'sessions', 'resume', 'continue'],
   },
   {
     id: 'bash',
@@ -109,6 +109,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { id: 'goal', label: 'goal', description: 'Keep working until a command passes, e.g. /goal npm test' },
   { id: 'rewind', label: 'rewind', description: 'Undo the last turn: restore files, forget the exchange' },
   { id: 'undo', label: 'undo', description: 'Same as /rewind 1' },
+  { id: 'redo', label: 'redo', description: 'Take back the last /undo: files and conversation' },
+  { id: 'compact', label: 'compact', description: 'Summarize the conversation so far and continue', aliases: ['summarize'] },
+  { id: 'export', label: 'export', description: 'Save this session as Markdown and JSON — /export sanitize to share it' },
+  { id: 'stats', label: 'stats', description: "This session's tokens and cost", aliases: ['cost', 'usage'] },
+  { id: 'effort', label: 'effort', description: 'Reasoning effort: cycle, or /effort fast|normal|high|xhigh', aliases: ['variant'] },
   { id: 'arena', label: 'arena', description: 'Run several attempts in parallel and keep the best' },
   { id: 'hooks', label: 'hooks', description: 'Show active hooks and permission rules' },
   { id: 'mcp', label: 'mcp', description: 'Show connected MCP servers' },

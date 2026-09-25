@@ -30,8 +30,14 @@ pub enum Token {
     RedirectErr,
     /// `2>&1`
     MergeErr,
-    /// `<<` with its delimiter.
-    Heredoc(String),
+    /// `<<` with its delimiter, and its body once the lexer has read it from
+    /// the lines after the command. A quoted delimiter (`<<'EOF'`) makes the
+    /// body literal; `<<-` strips its leading tabs.
+    Heredoc { delimiter: String, body: Option<String>, literal: bool },
+    /// `<<<` — the next word, plus a newline, is the command's input.
+    HereString,
+    /// `;;`, which ends a `case` arm.
+    CaseEnd,
     /// `(`
     OpenParen,
     /// `)`
@@ -60,8 +66,10 @@ pub enum Piece {
     Quoted(String),
     /// Single-quoted: entirely literal.
     Literal(String),
-    /// `$(...)` or backticks.
+    /// `$(...)` or backticks: output split into words and globbed.
     Command(String),
+    /// `"$(...)"`: output kept whole, as one word.
+    QuotedCommand(String),
     /// `$((...))`
     Arithmetic(String),
 }
@@ -77,7 +85,7 @@ impl Word {
             .iter()
             .map(|piece| match piece {
                 Piece::Bare(text) | Piece::Quoted(text) | Piece::Literal(text) => text.clone(),
-                Piece::Command(text) => format!("$({text})"),
+                Piece::Command(text) | Piece::QuotedCommand(text) => format!("$({text})"),
                 Piece::Arithmetic(text) => format!("$(({text}))"),
             })
             .collect()
@@ -109,6 +117,8 @@ impl Lexer {
 
     fn run(&mut self) -> Result<Vec<Token>, String> {
         let mut tokens = Vec::new();
+        // Heredocs on the current line, waiting for its end to read their bodies.
+        let mut pending: Vec<usize> = Vec::new();
 
         while let Some(c) = self.peek() {
             // Blank space between tokens, but not a newline, which is a token.
@@ -120,6 +130,15 @@ impl Lexer {
             if c == '\n' {
                 self.position += 1;
                 tokens.push(Token::Newline);
+                // Heredoc bodies start on the line after their command.
+                for index in pending.drain(..) {
+                    if let Some(Token::Heredoc { delimiter, body, .. }) = tokens.get_mut(index) {
+                        let strip = delimiter.starts_with('-');
+                        let end = delimiter.trim_start_matches('-').to_string();
+                        *delimiter = end.clone();
+                        *body = Some(self.heredoc_body(&end, strip));
+                    }
+                }
                 continue;
             }
 
@@ -133,6 +152,9 @@ impl Lexer {
             }
 
             if let Some(token) = self.operator()? {
+                if matches!(token, Token::Heredoc { .. }) {
+                    pending.push(tokens.len());
+                }
                 tokens.push(token);
                 continue;
             }
@@ -180,10 +202,22 @@ impl Lexer {
                 Some(Token::RedirectErr)
             }
             ('<', Some('<')) => {
+                if self.peek_at(2) == Some('<') {
+                    self.position += 3;
+                    return Ok(Some(Token::HereString));
+                }
                 self.position += 2;
-                let delimiter = self.heredoc_delimiter();
-                return Ok(Some(Token::Heredoc(delimiter)));
+                // `<<-` strips leading tabs from the body; the `-` rides on
+                // the delimiter until the body is read.
+                let strip = self.peek() == Some('-');
+                if strip {
+                    self.position += 1;
+                }
+                let (delimiter, literal) = self.heredoc_delimiter();
+                let delimiter = if strip { format!("-{delimiter}") } else { delimiter };
+                return Ok(Some(Token::Heredoc { delimiter, body: None, literal }));
             }
+            (';', Some(';')) => Some(Token::CaseEnd),
             _ => None,
         };
 
@@ -207,23 +241,50 @@ impl Lexer {
         Ok(Some(one))
     }
 
-    fn heredoc_delimiter(&mut self) -> String {
+    /// The delimiter word, and whether any of it was quoted — which makes the
+    /// body literal, as `<<'EOF'` does in every shell.
+    fn heredoc_delimiter(&mut self) -> (String, bool) {
         while matches!(self.peek(), Some(' ') | Some('\t')) {
             self.position += 1;
         }
         let mut delimiter = String::new();
+        let mut quoted = false;
         while let Some(c) = self.peek() {
-            if c.is_whitespace() {
+            if c.is_whitespace() || matches!(c, ';' | '|' | '&' | '<' | '>' | '(' | ')') {
                 break;
             }
-            // A quoted delimiter (`<<'EOF'`) means the body is literal; the
-            // quotes are stripped here and the parser decides what that means.
-            if c != '\'' && c != '"' {
+            if c == '\'' || c == '"' || c == '\\' {
+                quoted = true;
+            } else {
                 delimiter.push(c);
             }
             self.position += 1;
         }
-        delimiter
+        (delimiter, quoted)
+    }
+
+    /// Reads lines up to the one that is `end`, and returns them. The
+    /// delimiter is matched after trimming, so an indented `EOF` still closes
+    /// the body — the mistake that otherwise swallows the rest of a script.
+    fn heredoc_body(&mut self, end: &str, strip_tabs: bool) -> String {
+        let mut body = String::new();
+        while self.position < self.chars.len() {
+            let start = self.position;
+            while self.position < self.chars.len() && self.chars[self.position] != '\n' {
+                self.position += 1;
+            }
+            let line: String = self.chars[start..self.position].iter().collect();
+            if self.position < self.chars.len() {
+                self.position += 1;
+            }
+            let line = line.trim_end_matches('\r');
+            if line.trim() == end {
+                break;
+            }
+            body.push_str(if strip_tabs { line.trim_start_matches('\t') } else { line });
+            body.push('\n');
+        }
+        body
     }
 
     fn word(&mut self) -> Result<Word, String> {
@@ -298,7 +359,10 @@ impl Lexer {
                                 if !quoted.is_empty() {
                                     pieces.push(Piece::Quoted(std::mem::take(&mut quoted)));
                                 }
-                                pieces.push(self.substitution()?);
+                                pieces.push(match self.substitution()? {
+                                    Piece::Command(body) => Piece::QuotedCommand(body),
+                                    other => other,
+                                });
                             }
                             Some(c) => {
                                 quoted.push(c);
@@ -543,8 +607,20 @@ mod tests {
 
     #[test]
     fn heredocs_record_their_delimiter() {
-        assert_eq!(tokenize("cat << EOF").unwrap()[1], Token::Heredoc("EOF".to_string()));
-        assert_eq!(tokenize("cat <<'EOF'").unwrap()[1], Token::Heredoc("EOF".to_string()));
+        let heredoc = |delimiter: &str, literal: bool| Token::Heredoc { delimiter: delimiter.to_string(), body: None, literal };
+        assert_eq!(tokenize("cat << EOF").unwrap()[1], heredoc("EOF", false));
+        assert_eq!(tokenize("cat <<'EOF'").unwrap()[1], heredoc("EOF", true));
+    }
+
+    #[test]
+    fn heredoc_bodies_are_read_from_the_following_lines() {
+        let tokens = tokenize("cat <<-EOF > out\n\tline one\n\tline two\n\tEOF\necho after").unwrap();
+        let expected = Token::Heredoc { delimiter: "EOF".to_string(), body: Some("line one\nline two\n".to_string()), literal: false };
+        assert_eq!(tokens[1], expected);
+        // The body is not tokenized; the command after it is.
+        assert_eq!(tokens.iter().filter(|t| matches!(t, Token::Word(_))).count(), 4);
+        assert!(tokenize("a;;").unwrap().contains(&Token::CaseEnd));
+        assert_eq!(tokenize("cat <<< hi").unwrap()[1], Token::HereString);
     }
 
     #[test]

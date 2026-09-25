@@ -34,4 +34,4 @@ export {
 } from './chain.ts'
 
 export { decodeEntities, extractText, fetchPage, type FetchedPage } from './fetch.ts'
-export { createSearchTools } from './tools.ts'
+export { createSearchTools, createUrlReadSource } from './tools.ts'

@@ -1,6 +1,7 @@
 import type { JeanConfig, ModelRole } from '@jean/config'
-import { splitModelRef } from '@jean/config'
+import { savedKey, splitModelRef } from '@jean/config'
 import { estimateCost, modelInfo } from './catalog.ts'
+import { refreshCatalogInBackground } from './models-dev.ts'
 import { createProvider } from './providers/index.ts'
 import { applyStreamRules, type StreamRule } from './streaming.ts'
 import type {
@@ -62,6 +63,9 @@ export class ModelClient {
     this.config = options.config
     this.streamRules = options.streamRules ?? []
     this.onUsage = options.onUsage
+    // A client is made when a session starts: the moment to bring the model
+    // catalog up to date, in the background, when it is a day old.
+    refreshCatalogInBackground()
   }
 
   /** Resolves a role to the concrete model that will serve it. */
@@ -92,12 +96,28 @@ export class ModelClient {
 
     const override = this.config.providers[name] ?? {}
     const created = createProvider(name, {
-      apiKey: override.apiKey ?? (name === this.config.model.provider ? this.config.model.apiKey : undefined),
+      // The config first, then the key saved by `jean auth login` or
+      // `/connect`; the adapter falls back to the provider's env vars.
+      apiKey:
+        override.apiKey ??
+        (name === this.config.model.provider ? this.config.model.apiKey : undefined) ??
+        savedKey(name),
       baseUrl: override.baseUrl ?? (name === this.config.model.provider ? this.config.model.baseUrl : undefined),
       headers: override.headers,
+      api: override.api,
+      label: override.name,
+      keyEnv: override.keyEnv,
     })
     this.providers.set(name, created)
     return created
+  }
+
+  /**
+   * Drops the adapter built for a provider, so the next request builds it
+   * again from the config — after a key was added mid-session.
+   */
+  forgetProvider(name: string): void {
+    this.providers.delete(name)
   }
 
   /** True when the role's provider has credentials. */
@@ -206,7 +226,13 @@ export class ModelClient {
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
       cachedTokens: response.usage.cachedTokens,
-      costUsd: estimateCost(response.model, response.usage.inputTokens, response.usage.outputTokens),
+      costUsd: estimateCost(
+        response.model,
+        response.usage.inputTokens,
+        response.usage.outputTokens,
+        response.provider,
+        response.usage.cacheReadTokens ?? response.usage.cachedTokens ?? 0,
+      ),
       latencyMs: response.latencyMs,
       usedFallback,
     })

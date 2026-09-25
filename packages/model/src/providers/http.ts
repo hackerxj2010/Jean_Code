@@ -131,6 +131,15 @@ function describeFailure(provider: string, status: number, body: string): string
     // Not JSON; the raw body is the best we have.
   }
 
+  // OpenCode Zen serves its free models to the OpenCode app only, whatever
+  // the key: say so, and what to pick instead, rather than blame the key.
+  if (/FreeTierError|can only be used from within OpenCode/i.test(body)) {
+    return (
+      `${provider} returned ${status}: OpenCode Zen's free models are reserved for the OpenCode app, even with a key. ` +
+      'Pick a paid Zen model (/models, e.g. opencode:claude-sonnet-5) or a free model from another provider (e.g. an OpenRouter ":free" one).'
+    )
+  }
+
   // A 403 is not always a bad key: the key can be valid but barred from this
   // model, plan, or client (a free tier reserved for the provider's own app).
   const hint =

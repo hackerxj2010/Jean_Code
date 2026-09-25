@@ -1,7 +1,7 @@
-import { PROVIDER_KEY_ENV, type JeanConfig } from '@jean/config'
+import type { JeanConfig } from '@jean/config'
 import { Orchestrator } from '@jean/agent'
 import { EventStore, newSessionId, type LoopResult } from '@jean/core'
-import { defaultStreamRules, ModelClient } from '@jean/model'
+import { defaultStreamRules, ModelClient, providerEnv } from '@jean/model'
 import { openMemory } from '@jean/memory'
 import { Renderer } from '../render.ts'
 import { color, errorLine, line, symbols } from '../ui.ts'
@@ -67,10 +67,10 @@ export async function runOneShot(options: OneShotOptions): Promise<number> {
     const resolved = client.resolve('default')
     // Name the variable this provider actually reads: "set the provider-specific
     // key" is exactly the part the user does not know.
-    const expected = PROVIDER_KEY_ENV[resolved.provider]?.[0]
+    const expected = providerEnv(resolved.provider, options.config.providers)[0]
     const message = expected
-      ? `No API key for ${resolved.provider}. Set ${expected}, or switch to OpenRouter with OPENROUTER_API_KEY.`
-      : `No API key for ${resolved.provider}. Set OPENROUTER_API_KEY to reach every provider with one key.`
+      ? `No API key for ${resolved.provider}. Run \`jean auth login ${resolved.provider}\` or set ${expected}.`
+      : `No API key for ${resolved.provider}. Run \`jean auth login ${resolved.provider}\`, or pick a connected provider with -m.`
     if (options.format !== 'text') {
       process.stdout.write(`${JSON.stringify({ ok: false, error: message }, null, 2)}\n`)
     } else {

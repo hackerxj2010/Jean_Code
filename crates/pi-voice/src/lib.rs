@@ -1,23 +1,39 @@
 //! # pi-voice
 //!
-//! Audio handling for voice mode: WAV encoding and decoding, resampling,
-//! silence trimming, and turn detection.
+//! Audio for voice mode and for recordings an agent is handed: decoding
+//! (WAV, FLAC, AIFF, `.au`, G.711 — and anything else through `ffmpeg`),
+//! resampling, silence trimming, turn detection, and capture from the
+//! microphone.
 //!
-//! **What this crate does not do is talk to an audio device.** Device capture
-//! needs CoreAudio, WASAPI, or ALSA, which means platform linkage this crate
-//! will not take on. The host supplies PCM frames from wherever it gets them —
-//! the CLI's microphone, a Telegram voice note, a browser's `MediaRecorder` —
-//! and this crate does everything between that and the speech-to-text request.
+//! Capture goes through the recorder the machine already has — `parecord`,
+//! `arecord`, `sox`, or `ffmpeg` — rather than through CoreAudio, WASAPI, or
+//! ALSA, which would mean platform linkage this crate will not take on. The
+//! recorder hands over PCM; everything from there to the speech-to-text
+//! request is here.
 //!
-//! That split is deliberate rather than a shortcut. The parts worth owning are
-//! the ones that are subtly wrong everywhere: resampling that aliases, a WAV
-//! header written with the wrong byte count, silence detection that cuts off
-//! the end of a sentence. Those are pure computation, testable, and identical
-//! on every platform.
+//! The parts worth owning are the ones that are subtly wrong everywhere:
+//! resampling that aliases, a WAV header written with the wrong byte count,
+//! silence detection that cuts off the end of a sentence. Those are pure
+//! computation, testable, and identical on every platform.
 
+pub mod codecs;
+pub mod external;
 pub mod wav;
 
 pub use wav::{decode, encode, Format};
+
+/// Opens a recording in any format: decoded here when this crate reads it,
+/// through `ffmpeg` otherwise (MP3, Ogg, AAC, WebM...).
+pub fn open(path: &std::path::Path) -> Result<codecs::Decoded, String> {
+    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    match codecs::decode(&bytes) {
+        Ok(decoded) => Ok(decoded),
+        Err(native) => match external::transcode(path) {
+            Ok(frame) => Ok(codecs::Decoded { frame, format: "ffmpeg", bits_per_sample: 16 }),
+            Err(transcoded) => Err(format!("{native}; {transcoded}")),
+        },
+    }
+}
 
 /// A block of PCM audio.
 #[derive(Debug, Clone, PartialEq)]

@@ -22,52 +22,84 @@
 //! assert_eq!(result.stdout.trim(), "hello");
 //! ```
 
+use std::cell::Cell;
+
+pub mod arith;
+pub mod builtins;
 pub mod exec;
 pub mod expand;
 pub mod lexer;
 pub mod parser;
 pub mod session;
 
-pub use exec::Run;
+pub use exec::{Flow, Run};
 pub use session::{Policy, Session};
 
 /// A shell session identifier, for callers holding several.
 pub type SessionId = u64;
 
-/// Parses and runs a command line against a session.
+/// Parses and runs a script against a session.
+///
+/// The script is tokenized whole — heredoc bodies included — then split into
+/// complete commands, which run one after another: a `for` loop over three
+/// lines is one command, and `exit` or `set -e` stops what follows it.
 pub fn run(input: &str, session: &mut Session, stdin: &str) -> Run {
-    // Heredoc bodies live on the lines after the command, which the tokenizer
-    // cannot see. So each command is parsed, its heredocs filled from what
-    // follows, and the remainder parsed in turn.
-    let mut remaining = input.to_string();
+    // Recursion — nested functions, `eval`, deep substitutions — needs more
+    // stack than a caller's thread may have (a Windows main thread has one
+    // megabyte), so a script runs on a thread with plenty. A nested `run`
+    // is already on it.
+    if ON_SHELL_STACK.with(Cell::get) {
+        return run_here(input, session, stdin);
+    }
+    session.deadline = Some(std::time::Instant::now() + session.time_limit);
+    let ran = std::thread::scope(|scope| {
+        let spawned = std::thread::Builder::new().name("pi-shell".into()).stack_size(SHELL_STACK).spawn_scoped(scope, || {
+            ON_SHELL_STACK.with(|on| on.set(true));
+            run_here(input, &mut *session, stdin)
+        });
+        spawned.ok().map(|handle| {
+            handle.join().unwrap_or_else(|_| Run {
+                stderr: "pi-shell: the script crashed the shell
+".to_string(),
+                code: 2,
+                fatal: true,
+                ..Default::default()
+            })
+        })
+    });
+    // No thread to be had: run here, on whatever stack there is.
+    ran.unwrap_or_else(|| run_here(input, session, stdin))
+}
+
+/// The stack a script runs on.
+const SHELL_STACK: usize = 64 * 1024 * 1024;
+
+thread_local! {
+    static ON_SHELL_STACK: Cell<bool> = const { Cell::new(false) };
+}
+
+fn run_here(input: &str, session: &mut Session, stdin: &str) -> Run {
     let mut result = Run::default();
 
-    while !remaining.trim().is_empty() {
-        let (line, rest) = split_first_command(&remaining);
+    let tokens = match lexer::tokenize(input) {
+        Ok(tokens) => tokens,
+        Err(message) => {
+            result.stderr.push_str(&format!("syntax error: {message}\n"));
+            result.code = 2;
+            return result;
+        }
+    };
 
-        let tokens = match lexer::tokenize(&line) {
-            Ok(tokens) => tokens,
-            Err(message) => {
-                result.stderr.push_str(&format!("syntax error: {message}\n"));
-                result.code = 2;
-                return result;
-            }
-        };
-
-        let mut tree = match parser::parse(&tokens) {
+    for chunk in complete_commands(tokens) {
+        let tree = match parser::parse(&chunk) {
             Ok(Some(tree)) => tree,
-            Ok(None) => {
-                remaining = rest;
-                continue;
-            }
+            Ok(None) => continue,
             Err(message) => {
                 result.stderr.push_str(&format!("syntax error: {message}\n"));
                 result.code = 2;
                 return result;
             }
         };
-
-        remaining = parser::attach_heredocs(&mut tree, &rest);
 
         let step = exec::run(&tree, session, stdin);
         result.stdout.push_str(&step.stdout);
@@ -75,6 +107,12 @@ pub fn run(input: &str, session: &mut Session, stdin: &str) -> Run {
         result.code = step.code;
         result.refused.extend(step.refused);
         result.jobs.extend(step.jobs);
+        result.fatal |= step.fatal;
+        // A `return` in a sourced script ends it; a stray `break` ends nothing.
+        if step.flow == Some(Flow::Return) {
+            result.flow = step.flow;
+            break;
+        }
 
         if session.exited.is_some() {
             break;
@@ -84,38 +122,110 @@ pub fn run(input: &str, session: &mut Session, stdin: &str) -> Run {
     result
 }
 
-/// Splits the first command line off, leaving the rest.
-///
-/// A newline inside quotes or a `$(...)` does not end the command, so this
-/// cannot just split on the first newline.
-fn split_first_command(input: &str) -> (String, String) {
-    let chars: Vec<char> = input.chars().collect();
-    let mut quote: Option<char> = None;
-    let mut depth = 0;
-    let mut escaped = false;
+/// Splits a script's tokens into complete commands at the newlines that end
+/// one — not those inside a construct (`if` … `fi`, `{` … `}`, `(` … `)`),
+/// nor those after an operator that needs its right side (`|`, `&&`, `||`).
+fn complete_commands(tokens: Vec<lexer::Token>) -> Vec<Vec<lexer::Token>> {
+    use lexer::Token;
 
-    for (index, c) in chars.iter().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if quote != Some('\'') => escaped = true,
-            '\'' | '"' if quote.is_none() => quote = Some(*c),
-            c if Some(*c) == quote => quote = None,
-            '(' if quote.is_none() => depth += 1,
-            ')' if quote.is_none() => depth -= 1,
-            '\n' if quote.is_none() && depth == 0 => {
-                return (
-                    chars[..index].iter().collect(),
-                    chars[index + 1..].iter().collect(),
-                );
-            }
-            _ => {}
-        }
+    /// Where a `case` is: before `in`, at a pattern, or in an arm's body.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Case {
+        Subject,
+        Pattern,
+        Body,
     }
 
-    (input.to_string(), String::new())
+    let mut chunks = Vec::new();
+    let mut current: Vec<Token> = Vec::new();
+    let mut depth: i32 = 0;
+    // Whether the next word is where a command starts, which is the only
+    // place a reserved word is one.
+    let mut command_start = true;
+    // `function name` puts the body's `{` right after the name.
+    let mut after_function = 0;
+    // Open `case`s: a pattern's `)` closes the pattern, not a subshell.
+    let mut cases: Vec<Case> = Vec::new();
+
+    for token in tokens {
+        let in_pattern = cases.last() == Some(&Case::Pattern);
+        match &token {
+            Token::Newline => {
+                let continues = matches!(current.last(), Some(Token::Pipe | Token::And | Token::Or));
+                if depth <= 0 && !continues {
+                    if !current.is_empty() {
+                        chunks.push(std::mem::take(&mut current));
+                    }
+                    command_start = true;
+                    depth = 0;
+                    cases.clear();
+                    continue;
+                }
+                command_start = true;
+            }
+            Token::OpenParen if in_pattern => {}
+            Token::CloseParen if in_pattern => {
+                if let Some(state) = cases.last_mut() {
+                    *state = Case::Body;
+                }
+                command_start = true;
+            }
+            Token::OpenParen => {
+                depth += 1;
+                command_start = true;
+            }
+            Token::CloseParen => {
+                depth -= 1;
+                command_start = true;
+            }
+            Token::CaseEnd => {
+                if let Some(state) = cases.last_mut() {
+                    *state = Case::Pattern;
+                }
+                command_start = true;
+            }
+            Token::Semicolon | Token::And | Token::Or | Token::Pipe | Token::Background => command_start = true,
+            Token::Word(_) => {
+                let word = parser::keyword(Some(&token));
+                if in_pattern {
+                    if word == Some("esac") {
+                        depth -= 1;
+                        cases.pop();
+                    }
+                } else if cases.last() == Some(&Case::Subject) && word == Some("in") {
+                    if let Some(state) = cases.last_mut() {
+                        *state = Case::Pattern;
+                    }
+                } else if command_start || after_function == 1 {
+                    match word {
+                        Some("case") => {
+                            depth += 1;
+                            cases.push(Case::Subject);
+                        }
+                        Some("if" | "for" | "while" | "until" | "{") => depth += 1,
+                        Some("esac") => {
+                            depth -= 1;
+                            cases.pop();
+                        }
+                        Some("fi" | "done" | "}") => depth -= 1,
+                        _ => {}
+                    }
+                }
+                after_function = match (word, after_function) {
+                    (Some("function"), _) if command_start => 2,
+                    (_, 2) => 1,
+                    _ => 0,
+                };
+                command_start = matches!(word, Some("then" | "do" | "else" | "elif" | "{" | "!" | "if" | "while" | "until"));
+            }
+            _ => command_start = false,
+        }
+        current.push(token);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
 }
 
 /// Opens a session rooted at `cwd`.
@@ -155,35 +265,35 @@ fn inspect_at(input: &str, depth: usize) -> Result<Vec<SimpleCommand>, String> {
     if depth > 16 {
         return Err("command substitutions nested too deeply to inspect".to_string());
     }
-    let mut remaining = input.to_string();
     let mut found = Vec::new();
-
-    while !remaining.trim().is_empty() {
-        let (line, rest) = split_first_command(&remaining);
-        let tokens = lexer::tokenize(&line)?;
-        match parser::parse(&tokens)? {
-            Some(mut tree) => {
-                remaining = parser::attach_heredocs(&mut tree, &rest);
-                collect(&tree, false, depth, &mut found)?;
-            }
-            None => remaining = rest,
+    for chunk in complete_commands(lexer::tokenize(input)?) {
+        if let Some(tree) = parser::parse(&chunk)? {
+            collect(&tree, false, depth, &mut found)?;
         }
     }
     Ok(found)
 }
 
-fn collect(
-    node: &parser::Node,
-    background: bool,
-    depth: usize,
-    found: &mut Vec<SimpleCommand>,
-) -> Result<(), String> {
+/// Every command a tree can run — in either branch of an `if`, in a loop's
+/// body, in a function's body — since a permission check that skipped the
+/// inside of a loop would check nothing.
+fn collect(node: &parser::Node, background: bool, depth: usize, found: &mut Vec<SimpleCommand>) -> Result<(), String> {
     use parser::Node;
+    let words = |words: &[lexer::Word], found: &mut Vec<SimpleCommand>| -> Result<(), String> {
+        for word in words {
+            for piece in &word.pieces {
+                if let lexer::Piece::Command(inner) | lexer::Piece::QuotedCommand(inner) = piece {
+                    found.extend(inspect_at(inner, depth + 1)?);
+                }
+            }
+        }
+        Ok(())
+    };
     match node {
         Node::Command(command) => push(command, background, depth, found),
-        Node::Pipeline(commands) => {
-            for command in commands {
-                push(command, background, depth, found)?;
+        Node::Pipeline(stages) => {
+            for stage in stages {
+                collect(stage, background, depth, found)?;
             }
             Ok(())
         }
@@ -192,7 +302,45 @@ fn collect(
             collect(right, background, depth, found)
         }
         Node::Background(inner) => collect(inner, true, depth, found),
-        Node::Subshell(inner) => collect(inner, background, depth, found),
+        Node::Subshell(inner) | Node::Not(inner) | Node::Group(inner) => collect(inner, background, depth, found),
+        Node::Function { body, .. } => collect(body, background, depth, found),
+        Node::For { items, body, .. } => {
+            if let Some(items) = items {
+                words(items, found)?;
+            }
+            collect(body, background, depth, found)
+        }
+        Node::Loop { condition, body, .. } => {
+            collect(condition, background, depth, found)?;
+            collect(body, background, depth, found)
+        }
+        Node::If { branches, otherwise } => {
+            for (condition, body) in branches {
+                collect(condition, background, depth, found)?;
+                collect(body, background, depth, found)?;
+            }
+            match otherwise {
+                Some(body) => collect(body, background, depth, found),
+                None => Ok(()),
+            }
+        }
+        Node::Case { subject, arms } => {
+            words(std::slice::from_ref(subject), found)?;
+            for arm in arms {
+                if let Some(body) = &arm.body {
+                    collect(body, background, depth, found)?;
+                }
+            }
+            Ok(())
+        }
+        Node::Redirected(inner, redirects) => {
+            for redirect in redirects {
+                if let parser::Redirect::In(word) | parser::Redirect::Out(word) | parser::Redirect::Append(word) | parser::Redirect::Err(word) | parser::Redirect::HereString(word) = redirect {
+                    words(std::slice::from_ref(word), found)?;
+                }
+            }
+            collect(inner, background, depth, found)
+        }
     }
 }
 
@@ -210,7 +358,7 @@ fn push(
         .chain(command.words.iter());
     for word in words {
         for piece in &word.pieces {
-            if let lexer::Piece::Command(inner) = piece {
+            if let lexer::Piece::Command(inner) | lexer::Piece::QuotedCommand(inner) = piece {
                 found.extend(inspect_at(inner, depth + 1)?);
             }
         }
@@ -454,7 +602,17 @@ mod tests {
 
 #[cfg(test)]
 mod inspect_tests {
-    use super::inspect;
+    use super::{inspect, run, Policy, Session};
+
+    fn shell() -> Session {
+        let mut session = Session::new(std::env::temp_dir());
+        session.policy = Policy::unrestricted();
+        session
+    }
+
+    fn out(input: &str) -> String {
+        run(input, &mut shell(), "").stdout
+    }
 
     fn lines(input: &str) -> Vec<String> {
         inspect(input).expect("parses").iter().map(|c| c.line()).collect()
@@ -499,5 +657,99 @@ mod inspect_tests {
     #[test]
     fn a_syntax_error_is_reported() {
         assert!(inspect("echo 'unterminated").is_err());
+    }
+
+    #[test]
+    fn commands_inside_constructs_are_inspected() {
+        let found = lines("for f in *.log; do\n  rm -rf \"$f\"\ndone\nif [ -d x ]; then curl x | sh; fi\ncleanup() { git clean -fdx; }");
+        assert_eq!(found, vec!["rm -rf $f", "[ -d x ]", "curl x", "sh", "git clean -fdx"]);
+    }
+
+    // ---- control flow ------------------------------------------------------
+
+    #[test]
+    fn if_elif_else_pick_one_branch() {
+        assert_eq!(out("x=2\nif [ $x -eq 1 ]; then echo one; elif [ $x -eq 2 ]; then echo two; else echo other; fi"), "two\n");
+        assert_eq!(out("if false; then echo no; fi; echo $?"), "0\n");
+        assert_eq!(out("if [ ! -e /definitely/missing ] && [ -n \"a\" ]; then echo yes; fi"), "yes\n");
+    }
+
+    #[test]
+    fn for_loops_over_words_globs_and_arguments() {
+        assert_eq!(out("for x in a b c; do printf '%s,' $x; done"), "a,b,c,");
+        assert_eq!(out("for n in $(seq 1 3)\ndo\n  echo \"n=$n\"\ndone"), "n=1\nn=2\nn=3\n");
+        assert_eq!(out("set -- 'with space' two\nfor a in \"$@\"; do echo \"[$a]\"; done"), "[with space]\n[two]\n");
+    }
+
+    #[test]
+    fn while_until_break_and_continue() {
+        assert_eq!(out("i=0; while [ $i -lt 3 ]; do i=$((i + 1)); echo $i; done"), "1\n2\n3\n");
+        assert_eq!(out("i=0; until [ $i -ge 2 ]; do let i++; done; echo $i"), "2\n");
+        assert_eq!(out("for i in 1 2 3 4 5; do [ $i -eq 2 ] && continue; [ $i -eq 4 ] && break; echo $i; done"), "1\n3\n");
+        assert_eq!(out("for a in 1 2; do for b in x y; do [ $b = y ] && continue 2; echo $a$b; done; done"), "1x\n2x\n");
+        assert_eq!(out("while true; do for b in 1 2; do break 2; done; echo never; done; echo out"), "out\n");
+    }
+
+    #[test]
+    fn while_read_consumes_its_input_line_by_line() {
+        let mut session = shell();
+        let result = run("while read -r name rest; do echo \"<$name|$rest>\"; done", &mut session, "a 1\nb 2 3\n");
+        assert_eq!(result.stdout, "<a|1>\n<b|2 3>\n");
+        assert_eq!(out("printf 'x\\ny\\n' | while read line; do echo got $line; done"), "got x\ngot y\n");
+        assert_eq!(out("while read l; do echo $l; done <<EOF\none\ntwo\nEOF"), "one\ntwo\n");
+        assert_eq!(out("read a b <<< 'first second third'; echo $b"), "second third\n");
+    }
+
+    #[test]
+    fn case_matches_patterns() {
+        let script = "for f in main.rs app.ts README; do\n  case $f in\n    *.rs) echo rust ;;\n    *.ts|*.js) echo script ;;\n    *) echo other ;;\n  esac\ndone";
+        assert_eq!(out(script), "rust\nscript\nother\n");
+    }
+
+    #[test]
+    fn functions_take_arguments_locals_and_return() {
+        let script = "x=outer\ngreet() {\n  local x=inner\n  echo \"hello $1 ($#) $x\"\n  return 3\n}\ngreet world extra\necho \"status=$? x=$x\"";
+        assert_eq!(out(script), "hello world (2) inner\nstatus=3 x=outer\n");
+        assert_eq!(out("fact() { if [ $1 -le 1 ]; then echo 1; else echo $(( $1 * $(fact $(( $1 - 1 ))) )); fi; }; fact 5"), "120\n");
+        assert_eq!(out("function shout { echo \"$@!\"; }; shout hey there"), "hey there!\n");
+    }
+
+    #[test]
+    fn set_e_stops_at_the_first_failure_outside_a_condition() {
+        assert_eq!(out("set -e\nif false; then echo no; fi\nfalse || echo recovered\nfalse\necho unreachable"), "recovered\n");
+        let mut session = shell();
+        assert_eq!(run("set -euo pipefail\nfalse | true", &mut session, "").code, 1);
+    }
+
+    #[test]
+    fn arithmetic_uses_bare_names() {
+        assert_eq!(out("count=4; echo $((count * 2 + 1))"), "9\n");
+        assert_eq!(out("let 'x = 3 ** 2'; echo $x"), "9\n");
+        assert_eq!(out("echo $(( 7 % 3 )) $(( 10 / 4 ))"), "1 2\n");
+    }
+
+    #[test]
+    fn double_brackets_do_not_glob_or_split() {
+        assert_eq!(out("f='my file.rs'; [[ $f == *.rs ]] && echo match"), "match\n");
+        assert_eq!(out("[[ abc =~ ^a.c$ ]] && echo regex"), "regex\n");
+    }
+
+    #[test]
+    fn printf_groups_and_redirected_compounds() {
+        assert_eq!(out("printf '%-4s|%03d\\n' ab 7"), "ab  |007\n");
+        let dir = std::env::temp_dir().join(format!("pi-shell-group-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::new(&dir);
+        session.policy = Policy::unrestricted();
+        run("{ echo a; echo b; } > both.txt\nfor i in 1 2; do echo $i; done >> both.txt", &mut session, "");
+        assert_eq!(std::fs::read_to_string(dir.join("both.txt")).unwrap(), "a\nb\n1\n2\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_runaway_loop_is_stopped_and_a_quoted_heredoc_is_literal() {
+        assert_eq!(out("x=1; cat <<'EOF'\n$x stays\nEOF"), "$x stays\n");
+        assert_eq!(out("x=1; cat <<EOF\n$x expands\nEOF"), "1 expands\n");
+        assert!(out("f() { f; }; f").is_empty());
     }
 }

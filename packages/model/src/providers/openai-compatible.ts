@@ -130,7 +130,7 @@ export class OpenAICompatibleProvider implements Provider {
     if (request.stop?.length) body.stop = request.stop
     if (request.tools?.length) {
       body.tools = request.tools.map(toWireTool)
-      body.tool_choice = 'auto'
+      body.tool_choice = request.toolChoice ?? 'auto'
     }
     if (stream) body.stream_options = { include_usage: true }
     if (request.effort && this.config.effortField) {

@@ -1,6 +1,7 @@
+import { realpathSync } from 'node:fs'
 import { displayPath, resolveInWorkspace, ToolError, type Tool, type ToolContext, type ToolResult } from '@jean/tools'
 import { adapterFor, availableAdapters } from './adapters.ts'
-import { NativeDebuggers, type BreakpointLine, type Snapshot, type Value } from './native.ts'
+import { NativeDebuggers, type BreakpointLine, type Frame, type Snapshot, type Value } from './native.ts'
 import { DebugSession, type StackFrame, type Variable } from './session.ts'
 
 /**
@@ -91,7 +92,56 @@ export class DebugRegistry {
 
 // ---- rendering ----------------------------------------------------------------
 
-const shownPath = (path: string, cwd: string) => displayPath(path, { cwd } as never)
+/**
+ * A frame's path relative to the workspace. Adapters report the long form of
+ * a path (`C:\\Users\\Jean BADABA`) where the workspace may be known by its
+ * 8.3 name (`JEANBA~1`), so both sides are compared in their real form;
+ * `<node_internals>/...` is a name, not a path, and stays as it is.
+ */
+function shownPath(path: string, cwd: string): string {
+  if (path.startsWith('<')) return path
+  const shown = displayPath(path, { cwd } as never)
+  if (shown !== path) return shown
+  return displayPath(path, { cwd: realCwd(cwd) } as never)
+}
+
+const realCwds = new Map<string, string>()
+function realCwd(cwd: string): string {
+  let real = realCwds.get(cwd)
+  if (real === undefined) {
+    try {
+      real = realpathSync.native(cwd)
+    } catch {
+      real = cwd
+    }
+    realCwds.set(cwd, real)
+  }
+  return real
+}
+
+/** The stack as a reader wants it: runs of runtime frames folded to one line. */
+function renderFrames(frames: Frame[], cwd: string, limit: number): string[] {
+  const out: string[] = []
+  let folded = 0
+  const fold = () => {
+    if (folded > 0) out.push(`  ... ${folded} runtime frame${folded === 1 ? '' : 's'}`)
+    folded = 0
+  }
+  for (const [index, frame] of frames.slice(0, limit).entries()) {
+    // The frame the program stopped in is shown whatever it is; frames
+    // without source are the runtime's.
+    if ((frame.internal || !frame.path) && index > 0) {
+      folded++
+      continue
+    }
+    fold()
+    const where = frame.path ? `${shownPath(frame.path, cwd)}:${frame.line}` : `line ${frame.line}`
+    out.push(`  #${index} ${frame.name}  ${where}${frame.text ? `    ${frame.text.slice(0, 120)}` : ''}`)
+  }
+  fold()
+  if (frames.length > limit) out.push(`  ... ${frames.length - limit} more frames`)
+  return out
+}
 
 function renderValues(values: Value[], indent: string, limit: number): string[] {
   const out: string[] = []
@@ -129,18 +179,15 @@ export function renderSnapshot(snapshot: Snapshot, cwd: string): string {
       const why = [snapshot.reason, snapshot.description !== snapshot.reason ? snapshot.description : null, snapshot.text]
         .filter(Boolean)
         .join(' — ')
-      out.push(`[${snapshot.session}] Stopped: ${why || 'paused'}${snapshot.thread === undefined ? '' : ` (thread ${snapshot.thread})`}`)
+      // Which thread matters only when there is more than one.
+      const thread = snapshot.thread !== undefined && (snapshot.threads ?? 1) > 1 ? ` (thread ${snapshot.thread})` : ''
+      out.push(`[${snapshot.session}] Stopped: ${why || 'paused'}${thread}`)
       const frames = snapshot.frames ?? []
-      if (frames.length > 0) {
-        out.push('', 'Stack:')
-        for (const [index, frame] of frames.slice(0, 15).entries()) {
-          const where = frame.path ? `${shownPath(frame.path, cwd)}:${frame.line}` : `line ${frame.line}`
-          out.push(`  #${index} ${frame.name}  ${where}${frame.text ? `    ${frame.text.slice(0, 120)}` : ''}`)
-        }
-        if (frames.length > 15) out.push(`  ... ${frames.length - 15} more frames`)
-      }
+      if (frames.length > 0) out.push('', 'Stack:', ...renderFrames(frames, cwd, 15))
       for (const scope of snapshot.scopes ?? []) {
-        if (scope.variables === null) {
+        if (scope.sameAs) {
+          out.push('', `${scope.name}: the same as ${scope.sameAs}`)
+        } else if (scope.variables === null) {
           out.push('', `${scope.name}: not fetched (large) — \`debug_inspect\` with reference ${scope.reference}`)
         } else if (scope.variables.length > 0) {
           out.push('', `${scope.name}:`, ...renderValues(scope.variables, '  ', 40))

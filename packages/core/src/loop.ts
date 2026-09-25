@@ -95,6 +95,13 @@ export interface LoopOptions {
   retryDelaysMs?: number[]
   /** How many times `beforeStop` may push the agent on. Default 8. */
   maxStopContinuations?: number
+  /**
+   * What to ask for when the turns run out. Given, the agent is warned on
+   * its last turn with tools and then answers once more without them — so a
+   * sub-agent that searched for eighteen turns reports what it found instead
+   * of returning its last "let me check one more file".
+   */
+  wrapUp?: string
 }
 
 /**
@@ -115,6 +122,8 @@ export type LoopEvent =
   | { type: 'compacted'; tokensBefore: number; tokensAfter: number }
   | { type: 'notice'; text: string }
   | { type: 'error'; message: string; fatal: boolean }
+  /** Something a sub-agent did, under the `spawn` call that started it. */
+  | { type: 'subagent'; agent: string; spawnId?: string; event: LoopEvent }
 
 export interface LoopResult {
   /** The assistant's final text, with tool traffic removed. */
@@ -168,6 +177,9 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     onEvent?.({ type: 'turn_start', turn: turns })
 
     for (const text of await gatherReminders(options)) remind('harness', text)
+    if (options.wrapUp && maxTurns > 4 && turns === maxTurns) {
+      remind('turn-limit', 'This is your last turn with tools. Check only what your report still needs; after this turn you will write it.')
+    }
 
     const systemPrompt =
       typeof options.systemPrompt === 'function' ? options.systemPrompt() : options.systemPrompt
@@ -273,6 +285,13 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     }
   }
 
+  if (options.wrapUp && !signal?.aborted) {
+    const closing = await closingTurn(options, options.wrapUp, role)
+    if (closing) {
+      finalText = closing
+      return finish('max_turns')
+    }
+  }
   return finish('max_turns', `Stopped after ${maxTurns} turns without finishing.`)
 
   /**
@@ -352,7 +371,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     }
     if (before?.input !== undefined) input = before.input
 
-    let result = await registry.call(call.name, input, toolContext, {
+    let result = await registry.call(call.name, input, { ...toolContext, callId: call.id }, {
       approve: before?.approve,
       ask: before?.ask,
     })
@@ -524,6 +543,43 @@ async function streamTurn(
   return response
 }
 
+/**
+ * One more answer, in words only: the report a run owes when its turns are
+ * spent. Tool calls a provider sends anyway are dropped, so the transcript
+ * never holds a call without a result.
+ */
+async function closingTurn(options: LoopOptions, ask: string, role: ModelRole): Promise<string | undefined> {
+  const { store, registry, config, client, signal } = options
+  store.append({ type: 'reminder', at: Date.now(), source: 'turn-limit', text: ask })
+  const systemPrompt = typeof options.systemPrompt === 'function' ? options.systemPrompt() : options.systemPrompt
+  try {
+    const stream = client.stream(
+      {
+        messages: trimToolResults(store.transcript()),
+        system: systemPrompt,
+        tools: registry.schemas(config.permissionMode),
+        toolChoice: 'none',
+        effort: config.effort,
+        signal,
+      },
+      role,
+    )
+    let response: CompletionResponse | undefined
+    for await (const event of stream as AsyncGenerator<StreamEvent, void, void>) {
+      if (event.type === 'text') options.onEvent?.({ type: 'text', delta: event.delta })
+      if (event.type === 'error') throw event.error
+      if (event.type === 'done') response = event.response
+    }
+    const content = (response?.content ?? []).filter((block) => block.type !== 'tool_call')
+    const text = textOf(content)
+    if (!text) return undefined
+    store.append({ type: 'assistant_message', at: Date.now(), content, usage: response?.usage, model: response?.model })
+    return text
+  } catch {
+    return undefined
+  }
+}
+
 /** Compacts when the context is close to full. */
 async function maybeCompact(
   options: LoopOptions,
@@ -537,7 +593,7 @@ async function maybeCompact(
   const status = await measureContextExact(
     store.transcript(),
     systemPrompt,
-    resolved.modelId,
+    `${resolved.provider}:${resolved.modelId}`,
     config.compactThreshold,
     resolved.maxTokens,
   )

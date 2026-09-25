@@ -13,18 +13,24 @@ bun run jean
 
 ## Status
 
-This is an early build of the architecture in [`jean-code-architecture.md`](jean-code-architecture.md). The foundation and a complete working vertical slice are here; the breadth is not. **[docs/STATUS.md](docs/STATUS.md) lists exactly what works, what is partial, and what is not built** — read it before relying on anything.
+This is an early build of the architecture in [`jean-code-architecture.md`](jean-code-architecture.md). The foundation and a complete working vertical slice are here; the breadth is not. **[docs/STATUS.md](docs/STATUS.md) lists exactly what works, where its edges are, and what is not built** — read it before relying on anything. **[docs/OPENCODE-2.md](docs/OPENCODE-2.md)** sets it against OpenCode 2.0, feature by feature.
 
 What works today, end to end:
 
 - **The agent loop** — multi-turn, tool-calling, with parallel reads, truncation recovery, loop detection, rate-limit retries, auto-compaction, session persistence, and resume.
 - **The tool harness** — `read`, `write`, `edit`, `glob`, `grep`, `bash`, `todo`, `spawn`, `git_*`, `retain`/`recall`, `skill`/`skill_save`, and MCP tools over stdio or HTTP.
 - **Edits that land** — `old_string`/`new_string` with a tolerant matcher cascade, atomic multi-edit batches, and hashline anchors, in Rust *and* TypeScript.
-- **The model layer** — 15 providers over three wire protocols, streaming, role routing, fallback chains, prompt caching, and extended-thinking replay.
+- **Every provider, one picker** — the models.dev catalog (220+ providers, 8,000+ models, with prices and context windows), OpenCode Zen and OpenCode Go built in, your own OpenAI-compatible endpoint in one config line; `/models` and `/connect` pickers, `jean auth login`, keys kept out of the config file. Four wire protocols (Chat Completions, OpenAI Responses, Anthropic, Gemini), streaming, role routing, fallback chains, prompt caching, and extended-thinking replay.
+- **Jean as a service** — `jean serve` runs sessions over HTTP, several at once, streamed live, with permission questions sent to your terminal; `jean attach` joins one from another terminal or machine; `jean serve acp` for editors, `jean serve mcp` for other agents.
+- **Sessions to keep** — `--continue`, `--fork`, `/undo` and `/redo`, `jean export --sanitize` to share one without its secrets, `jean import`, and `jean stats` for tokens and cost by model and tool.
 - **Goals, rewind, and arena** — `--verify "npm test"` keeps the agent working until the check passes; `/rewind` undoes a turn's edits; `jean arena` runs several attempts in parallel and keeps the best.
 - **Claude Code compatible extensibility** — hooks, permission rules, custom slash commands, and custom agents from `.claude/` or `.jean/`, with project trust.
 - **The CLI** — a full-screen TUI on a terminal, line-based output when piped, one-shot mode with JSON output, slash commands, shell completions, `jean doctor`.
-- **Code intelligence** — real diagnostics, go-to-definition through imports, and references that distinguish a binding from a string that happens to match, via any installed language server.
+- **Code intelligence** — real diagnostics after every edit, definitions, references, renames, code actions, and formatting through 79 language servers, installed on demand.
+- **A debugger the agent drives** — breakpoints, stepping, stack and live values through debugpy, js-debug, CodeLLDB, Delve, GDB, and more; verified against the real ones.
+- **Reads more than files** — PDFs, web pages, pull requests and issues (`pr://123`), files on other machines over SSH, archives, notebooks, SQLite, and recordings (WAV, FLAC, AIFF, MP3 through ffmpeg).
+- **Everywhere** — Telegram, Discord, Slack, email, Matrix, Signal, WhatsApp, and SMS through `jean gateway start`; the microphone through `jean voice record`.
+- **Plugins** — enabled by name, and reloaded when their files change.
 - **Memory** — SQLite with FTS5 recall, scoped per project, entirely local.
 
 All of the above has been run against live models, not just mocks — see [docs/STATUS.md](docs/STATUS.md).
@@ -33,26 +39,37 @@ All of the above has been run against live models, not just mocks — see [docs/
 
 ## Install
 
-Requires [Bun](https://bun.sh) 1.3+ (or Node 22+), and a Rust toolchain for the native core:
+One command installs everything — Bun and Rust if they are missing, the dependencies, the native core, the debuggers, and the common language servers — and puts `jean` on your PATH:
+
+```bash
+./install.sh            # macOS, Linux, Git Bash
+```
+
+```powershell
+.\install.ps1          # Windows PowerShell
+```
+
+`--all` (`-All`) installs every debugger and language server that installs itself, not only those for the languages on your machine. `jean setup check` shows what is there and what is missing; `jean setup` installs it.
+
+By hand, with [Bun](https://bun.sh) 1.3+ and a Rust toolchain:
 
 ```bash
 bun install
-bun run build:native     # or: bun run jean native build
+bun run jean setup       # the native core, debuggers, and language servers
 bun run jean native test # every crate, driven once through the bridge
 bun run jean --help
 ```
 
 The Rust core runs search, edits, shell parsing, isolation, compaction, memory, and audio. Every one of those keeps a TypeScript fallback, so Jean still starts without a Rust build — it is just slower and loses what only Rust provides. `jean doctor` says which you have.
 
-Set one key and you can reach every provider:
+Then give it one key — asked for without echoing it, checked against the provider, and saved in `~/.jean/auth.json`:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
+jean auth login opencode      # OpenCode Zen: Claude, GPT, Gemini, and open models behind one key
+jean auth login openrouter    # or OpenRouter, Anthropic, OpenAI, Google, and 200+ more
 ```
 
-That is the whole setup — OpenRouter is the default provider. See **[docs/openrouter.md](docs/openrouter.md)** for choosing models, the free tier, fallback chains, and routing roles to different models.
-
-Or go direct: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, and a dozen more. Run `jean doctor` if anything is unclear — it reports credentials, which config files won, and whether memory is working.
+That is the whole setup: with no model configured, Jean starts on a provider that has a key. `jean providers` lists them all, `jean models opencode` shows what one serves, and `/models` or `/connect` in a session picks without leaving it. Exported keys work too — `OPENCODE_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, and the rest. See **[docs/openrouter.md](docs/openrouter.md)** for fallback chains and routing roles to different models. Run `jean doctor` if anything is unclear — it reports credentials, the catalog, which config files won, and whether memory is working.
 
 > Jean Code's loop is built on tool calls. Pick a model that supports them, or the agent will describe the work instead of doing it.
 
@@ -65,7 +82,10 @@ jean                                  # interactive session
 jean "fix the failing test in auth"   # start with a prompt
 jean -p "what does this service do?"  # one-shot, non-interactive
 jean -p "list the API routes" -f json # machine-readable output
-jean resume                           # continue where you left off
+jean resume                           # continue where you left off (--continue, --fork)
+jean -m opencode:claude-sonnet-5      # any provider:model from `jean models`
+jean serve & jean attach              # run as a service; attach from any terminal
+jean stats --days 7                   # tokens and cost by model and tool
 jean doctor                           # diagnose configuration
 ```
 
@@ -75,14 +95,16 @@ Inside a session:
 |---|---|
 | `/help` | Every command and keyword |
 | `/focus` `/autonomous` `/swarm` | Switch operating mode |
-| `/model [id]` | Show or change the model |
+| `/models` `/connect` | Pick a model from every connected provider; connect another |
+| `/model [provider:model]` | Show or change the model |
 | `/effort <fast\|normal\|high\|xhigh>` | Reasoning depth |
 | `/permissions <auto\|ask\|plan\|full>` | Permission gating |
 | `/context` | Token usage, cost, files changed |
 | `/compact` | Summarize and continue |
 | `/tools` | What the agent can currently do |
 | `/goal <command>` | Keep working until the command passes (`/goal off` to clear) |
-| `/rewind [n]` `/undo` | Restore the files the last turn(s) edited and forget them |
+| `/rewind [n]` `/undo` `/redo` | Restore the files the last turn(s) edited and forget them — or take that back |
+| `/export [sanitize]` `/stats` | Save the session as Markdown and JSON; its tokens and cost |
 | `/arena [n] <task>` | Run n attempts in parallel, keep the best one |
 | `/commands` `/agents` | Custom commands and sub-agents available here |
 | `/hooks` `/mcp` | Active hooks, permission rules, and MCP servers |
@@ -215,13 +237,15 @@ crates/          Rust core, wired into the runtime (see docs/STATUS.md)
   pi-walker/     Parallel ignore-aware walk and search — glob, grep, every walk()
   hashline/      Content-hash anchors and patches — read and edit
   pi-ast/        Structural search and outlines — ast_grep, codemap_outline
-  pi-builtins/   58 coreutils — the text tool, the embedded shell
-  pi-shell/      Shell parser and executor — command safety, permission rules, no-bash fallback
-  pi-iso/        Snapshot copies with three-way merge — sub-agents and the arena outside git
+  pi-builtins/   58 coreutils — the text tool, the embedded shell, the system shell's missing commands
+  pi-shell/      Shell with conditions, loops, and functions — command safety, permission rules, no-bash fallback
+  pi-iso/        Copy-on-write views (clonefile, reflink, ReFS) with three-way merge — sub-agents outside git
   snapcompact/   Reversible compaction — the archive behind recall_archive
   pi-sys/        Process trees, keep-awake, clipboard — bash kills, long runs, /copy
   pi-tokens/     Token counting — the auto-compaction threshold
-  pi-voice/      WAV analysis and preparation — read, transcribe
+  pi-voice/      WAV, FLAC, AIFF decoding, turn detection, microphone capture — read, transcribe, jean voice
+  pi-lsp/        Language-server engine: 79 servers, installed on demand — the lsp_* tools
+  pi-dap/        Debugger engine: 10 adapters, stdio and TCP — the debug_* tools
   pi-mnemopi/    Append-only memory log with BM25 — the default memory backend
   pi-natives/    The bridge binary (JSON lines over a pipe)
   pi-ffi/        The same bridge as an in-process library, for synchronous calls
@@ -233,8 +257,9 @@ packages/        25 TypeScript packages
   agent/         Orchestrator, specialized agents, sub-agent fan-out
   memory/        pi-mnemopi log by default; SQLite + FTS5 and JSONL fallbacks
   native/        The typed bridge to crates/, with per-method call counts
-  lsp/           Language servers: 18 registered, 6 agent tools
-  tui/           Full-screen renderer, raw-mode input, tool cards
+  lsp/           Language servers on crates/pi-lsp: 79 known, 14 agent tools
+  dap/           Debuggers on crates/pi-dap: 10 adapters, 7 agent tools
+  tui2/          The full-screen interface
   cli/           The `jean` binary
   ...            teams, subagents, advisor, git, skills, mcp, execution, sdk, ...
 tests/           Unit, cross-language parity, and end-to-end suites
@@ -262,4 +287,4 @@ The end-to-end suite ([`tests/e2e.test.ts`](tests/e2e.test.ts)) runs the real `j
 
 ## License
 
-MIT. The full-screen interface in `packages/tui` is derived from Codebuff (Apache-2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. The full-screen interface in `packages/tui2` is derived from Codebuff (Apache-2.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

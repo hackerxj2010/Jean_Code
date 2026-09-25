@@ -41,3 +41,4 @@ export {
 } from './api.ts'
 
 export { createGitHubTools } from './tools.ts'
+export { createGitHubReadSource, parseGitHubPath } from './read-source.ts'

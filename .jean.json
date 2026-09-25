@@ -11,20 +11,20 @@
 
   "model": {
     "provider": "openrouter",
-    "modelId": "minimax/minimax-m3:free"
+    "modelId": "poolside/laguna-s-2.1:free"
   },
 
   "agents": {
-    "default": { "model": "minimax/minimax-m3:free", "maxTokens": 8192, "temperature": 0 },
-    "smol": { "model": "minimax/minimax-m3:free", "maxTokens": 4096 },
-    "slow": { "model": "minimax/minimax-m3:free", "maxTokens": 8192 },
-    "plan": { "model": "minimax/minimax-m3:free", "maxTokens": 8192 },
-    "commit": { "model": "minimax/minimax-m3:free", "maxTokens": 1024 },
-    "vision": { "model": "minimax/minimax-m3:free", "maxTokens": 4096 },
-    "designer": { "model": "minimax/minimax-m3:free", "maxTokens": 8192 },
-    "task": { "model": "minimax/minimax-m3:free", "maxTokens": 4096 },
-    "advisor": { "model": "minimax/minimax-m3:free", "maxTokens": 4096 },
-    "tiny": { "model": "minimax/minimax-m3:free", "maxTokens": 2048 }
+    "default": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 8192, "temperature": 0 },
+    "smol": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 4096 },
+    "slow": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 8192 },
+    "plan": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 8192 },
+    "commit": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 1024 },
+    "vision": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 4096 },
+    "designer": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 8192 },
+    "task": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 4096 },
+    "advisor": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 4096 },
+    "tiny": { "model": "poolside/laguna-s-2.1:free", "maxTokens": 2048 }
   },
 
   // The advisor makes a second model call per turn to review the first. Free or

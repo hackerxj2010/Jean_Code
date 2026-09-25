@@ -44,17 +44,22 @@ interface GenerateResponse {
 }
 
 export class GoogleProvider implements Provider {
-  readonly name = 'google'
-  readonly label = 'Google Gemini'
+  readonly name: string
+  readonly label: string
 
-  constructor(private readonly options: ProviderOptions = {}) {}
+  constructor(private readonly options: ProviderOptions = {}) {
+    this.name = options.name ?? 'google'
+    this.label = options.label ?? 'Google Gemini'
+  }
 
   private key(): string | undefined {
-    return (
-      cleanKey(this.options.apiKey) ??
-      cleanKey(process.env.GOOGLE_API_KEY) ??
-      cleanKey(process.env.GEMINI_API_KEY)
-    )
+    const explicit = cleanKey(this.options.apiKey)
+    if (explicit) return explicit
+    for (const name of this.options.keyEnv ?? ['GOOGLE_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY']) {
+      const value = cleanKey(process.env[name])
+      if (value) return value
+    }
+    return undefined
   }
 
   isConfigured(): boolean {
@@ -99,6 +104,7 @@ export class GoogleProvider implements Provider {
           })),
         },
       ]
+      if (request.toolChoice === 'none') body.toolConfig = { functionCallingConfig: { mode: 'NONE' } }
     }
     return body
   }

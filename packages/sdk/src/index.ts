@@ -7,7 +7,7 @@ import {
   type LoopEvent,
   type LoopResult,
 } from '@jean/core'
-import { defaultStreamRules, ModelClient } from '@jean/model'
+import { chooseModel, defaultStreamRules, ModelClient } from '@jean/model'
 import { openMemory, type MemoryBackend } from '@jean/memory'
 import type { Tool } from '@jean/tools'
 
@@ -71,11 +71,12 @@ export async function createAgent(options: AgentOptions = {}): Promise<Agent> {
   const cwd = options.cwd ?? process.cwd()
   const sessionId = newSessionId()
 
-  const { config } = loadConfig({
+  const loaded = loadConfig({
     cwd,
     flags: options.config,
     skipImport: options.skipImport,
   })
+  const { config } = chooseModel(loaded.config, loaded.modelChosen ?? true)
 
   const client = new ModelClient({ config, streamRules: defaultStreamRules() })
   const { backend: memory } = openMemory(config)

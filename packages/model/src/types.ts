@@ -21,6 +21,12 @@ export type ContentBlock =
       signature?: string
       /** Encrypted thinking the provider redacted; replayed as-is. */
       redacted?: string
+      /**
+       * Reasoning another wire format keeps encrypted and wants back on the
+       * next turn — OpenAI's Responses reasoning items. Only the adapter of
+       * that format replays it; every other one ignores it.
+       */
+      replay?: { format: 'openai-responses'; id: string; data: string }
     }
   | { type: 'tool_call'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; name: string; output: string; isError?: boolean }
@@ -49,6 +55,11 @@ export interface CompletionRequest {
   messages: Message[]
   system?: string
   tools?: ToolSchema[]
+  /**
+   * `none` keeps the tools visible — a transcript holding tool calls needs
+   * them defined — but asks for an answer in words: a final report.
+   */
+  toolChoice?: 'auto' | 'none'
   maxTokens?: number
   temperature?: number
   /** Reasoning depth for models that expose it. */
@@ -114,9 +125,21 @@ export interface ProviderOptions {
   headers?: Record<string, string>
   /** Overrides the default retry budget for transient failures. */
   maxRetries?: number
+  /**
+   * The provider this adapter serves, when it is not the wire format's own
+   * vendor — Claude through OpenCode Zen speaks Anthropic's format under
+   * the name `opencode`, with Zen's key.
+   */
+  name?: string
+  label?: string
+  /** Env vars probed for the key, in order, in place of the vendor's own. */
+  keyEnv?: string[]
 }
 
-/** An entry in the bundled model catalog. */
+/** Which wire format a model is spoken to in. */
+export type ModelApi = 'chat' | 'responses' | 'anthropic' | 'google'
+
+/** An entry in the model catalog. */
 export interface ModelInfo {
   id: string
   provider: string
@@ -126,9 +149,22 @@ export interface ModelInfo {
   /** USD per million tokens. */
   inputCost?: number
   outputCost?: number
+  /** USD per million tokens read from, and written to, the prompt cache. */
+  cacheReadCost?: number
+  cacheWriteCost?: number
   supportsTools: boolean
   supportsVision: boolean
   supportsThinking: boolean
+  /** Costs nothing to use. */
+  free?: boolean
+  /** Reasoning effort levels the model accepts, when it names them. */
+  reasoningLevels?: string[]
+  /** `alpha`, `beta`, or `deprecated`; absent for a generally available model. */
+  status?: string
+  /** `YYYY-MM-DD`. */
+  releaseDate?: string
+  /** The wire format this model needs when it differs from its provider's. */
+  api?: ModelApi
 }
 
 /** Raised when a provider rejects a request. Carries retry information. */

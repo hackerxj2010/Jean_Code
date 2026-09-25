@@ -1,14 +1,14 @@
 import { existsSync } from 'node:fs'
 import { platform, release } from 'node:os'
 import {
-  configuredProviders,
   globalConfigPath,
   jeanHome,
+  savedKey,
   supportedFormats,
   type LoadedConfig,
 } from '@jean/config'
 import { loadInstructionFiles } from '@jean/core'
-import { createProvider, modelInfo, providerLabel, providerNames } from '@jean/model'
+import { catalogAge, connectedProviders, createProvider, modelInfo, providerEntry, providerLabel } from '@jean/model'
 import { openMemory } from '@jean/memory'
 import { nativeStatus } from '@jean/native'
 import { color, line, symbols } from '../ui.ts'
@@ -43,25 +43,28 @@ export async function runDoctor(loaded: LoadedConfig, cwd: string): Promise<numb
 
   // 1. Credentials — the overwhelmingly common failure.
   line(color.bold('Providers'))
-  const available = configuredProviders()
+  const available = connectedProviders(config.providers)
   if (available.length === 0) {
-    bad('No provider credentials found in the environment.')
-    info('Set OPENROUTER_API_KEY to reach every provider with one key:')
-    info('  export OPENROUTER_API_KEY=sk-or-...')
-    info('Or set a provider-specific key: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY.')
+    bad('No provider credentials found — in the environment, the config, or saved keys.')
+    info('Save a key once:  jean auth login opencode   (or openrouter, anthropic, openai, google, …)')
+    info('Or export one: OPENCODE_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY.')
   } else {
-    ok(`Credentials found for: ${available.map(providerLabel).join(', ')}`)
+    ok(`Credentials found for: ${available.map((entry) => entry.label).join(', ')}`)
   }
+  const age = catalogAge()
+  if (age === undefined) info('Model catalog: bundled only — `jean models --refresh` fetches every provider from models.dev.')
+  else ok(`Model catalog from models.dev, ${Math.round(age / 3_600_000)}h old.`)
 
   const active = config.model.provider
-  if (!providerNames().includes(active)) {
+  if (!providerEntry(active, config.providers)) {
     bad(`Configured provider "${active}" is not one Jean Code knows.`)
-    info(`Known providers: ${providerNames().join(', ')}`)
+    info('`jean providers --all` lists them; `providers.<id>.baseUrl` adds your own.')
   } else {
     try {
       const provider = createProvider(active, {
-        apiKey: config.model.apiKey,
-        baseUrl: config.model.baseUrl,
+        apiKey: config.model.apiKey ?? config.providers[active]?.apiKey ?? savedKey(active),
+        baseUrl: config.model.baseUrl ?? config.providers[active]?.baseUrl,
+        api: config.providers[active]?.api,
       })
       if (provider.isConfigured()) ok(`Active provider ${providerLabel(active)} has a key.`)
       else bad(`Active provider ${providerLabel(active)} has no key — requests will fail.`)

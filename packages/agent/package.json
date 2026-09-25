@@ -35,6 +35,7 @@
     "@jean/hooks": "workspace:*",
     "@jean/commands": "workspace:*",
     "@jean/mcp": "workspace:*",
+    "@jean/plugins": "workspace:*",
     "@jean/native": "workspace:*"
   }
 }

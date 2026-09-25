@@ -191,6 +191,8 @@ export function validate(raw: unknown, path = '<config>'): ParseResult {
   objectField('lsp')
   objectField('debuggers')
   objectField('languageTools')
+  objectField('plugins')
+  objectField('gateway')
   objectField('mcpServers')
   objectField('memory')
   objectField('execution')
@@ -258,6 +260,8 @@ export function validate(raw: unknown, path = '<config>'): ParseResult {
     'lsp',
     'debuggers',
     'languageTools',
+    'plugins',
+    'gateway',
     'mcpServers',
     'memory',
     'execution',

@@ -7,7 +7,7 @@
 //! source file or a binary, how output is captured. Those differences live
 //! here, in data, so the session code speaks plain DAP to all of them.
 
-use pi_lsp::json::{self, literal, merge, object, string, Json, JsonExt};
+use pi_lsp::json::{self, literal, merge, string, Json, JsonExt};
 use pi_lsp::servers::{Asset, Install};
 use std::path::{Path, PathBuf};
 
@@ -135,23 +135,9 @@ impl AdapterSpec {
             }
         }
         if let Some(program) = program {
-            let text = program.to_string_lossy().to_string();
-            let is_cargo = program.file_name().is_some_and(|name| name == "Cargo.toml") || program.join("Cargo.toml").is_file();
-            match self.id.as_str() {
-                // CodeLLDB builds a Cargo project itself and debugs the
-                // binary it produced.
-                "codelldb" if is_cargo => {
-                    let manifest = if program.is_dir() { program.join("Cargo.toml") } else { program.to_path_buf() };
-                    config.set(
-                        "cargo",
-                        object([(
-                            "args",
-                            json::strings(["build", "--manifest-path", &manifest.to_string_lossy()]),
-                        )]),
-                    );
-                }
-                _ => config.set("program", string(text)),
-            }
+            // A native adapter's program is already a binary: the hub builds
+            // sources first (see `build`).
+            config.set("program", string(program.to_string_lossy()));
             // Node runs TypeScript itself since 23.6; js-debug only has to
             // not stop it.
             if self.id == "js-debug" && matches!(program.extension().and_then(|e| e.to_str()), Some("ts" | "mts" | "cts")) {

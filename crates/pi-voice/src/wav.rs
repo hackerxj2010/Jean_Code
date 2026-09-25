@@ -71,6 +71,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, String> {
     }
 
     let mut format: Option<Format> = None;
+    let mut encoding = 1u16;
     let mut data: Option<&[u8]> = None;
     let mut offset = 12;
 
@@ -97,10 +98,15 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, String> {
                     return Err("the fmt chunk is too short".to_string());
                 }
                 let body = &bytes[body_start..body_end];
-                let encoding = u16::from_le_bytes([body[0], body[1]]);
-                if encoding != 1 {
+                encoding = u16::from_le_bytes([body[0], body[1]]);
+                // WAVE_FORMAT_EXTENSIBLE carries the real format in its
+                // sub-format GUID, whose first two bytes are the code.
+                if encoding == 0xFFFE && body.len() >= 26 {
+                    encoding = u16::from_le_bytes([body[24], body[25]]);
+                }
+                if !matches!(encoding, 1 | 3 | 6 | 7) {
                     return Err(format!(
-                        "only PCM is supported; this file uses format {encoding}"
+                        "unsupported WAV encoding {encoding}: PCM, float, A-law, and μ-law are read"
                     ));
                 }
                 format = Some(Format {
@@ -121,23 +127,29 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, String> {
     let format = format.ok_or("no fmt chunk")?;
     let data = data.ok_or("no data chunk")?;
 
-    let samples = match format.bits_per_sample {
-        16 => data
+    let to_i16 = |value: f64| (value.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+    let samples = match (encoding, format.bits_per_sample) {
+        (7, _) => data.iter().map(|byte| crate::codecs::ulaw(*byte)).collect(),
+        (6, _) => data.iter().map(|byte| crate::codecs::alaw(*byte)).collect(),
+        (3, 32) => data.chunks_exact(4).map(|q| to_i16(f64::from(f32::from_le_bytes([q[0], q[1], q[2], q[3]])))).collect(),
+        (3, 64) => data.chunks_exact(8).map(|o| to_i16(f64::from_le_bytes(o.try_into().unwrap_or([0; 8])))).collect(),
+        (3, other) => return Err(format!("unsupported float depth: {other}")),
+        (_, 16) => data
             .chunks_exact(2)
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect(),
         // 8-bit WAV is unsigned with a 128 offset, which is the detail that
         // makes a naive conversion sound like loud static.
-        8 => data.iter().map(|byte| ((*byte as i16) - 128) * 256).collect(),
-        24 => data
+        (_, 8) => data.iter().map(|byte| ((*byte as i16) - 128) * 256).collect(),
+        (_, 24) => data
             .chunks_exact(3)
             .map(|triple| i16::from_le_bytes([triple[1], triple[2]]))
             .collect(),
-        32 => data
+        (_, 32) => data
             .chunks_exact(4)
             .map(|quad| i16::from_le_bytes([quad[2], quad[3]]))
             .collect(),
-        other => return Err(format!("unsupported bit depth: {other}")),
+        (_, other) => return Err(format!("unsupported bit depth: {other}")),
     };
 
     Ok(Frame { samples, sample_rate: format.sample_rate.max(1), channels: format.channels })

@@ -1,43 +1,16 @@
-import type { JeanConfig } from '@jean/config'
-import { listSessions } from '@jean/core'
+import { setSetting, type JeanConfig } from '@jean/config'
 import { openMemory } from '@jean/memory'
-import { allModels, providerLabel, providerNames } from '@jean/model'
 import { discoverPlugins } from '@jean/plugins'
 import { describeSkills, discoverSkills } from '@jean/skills'
 import { color, errorLine, line, symbols } from '../ui.ts'
 
 /**
- * The informational commands: `models`, `memory`, `skills`, `plugins`,
- * `sessions`.
+ * The informational commands: `memory`, `skills`, `plugins`.
+ * (`models` and `providers` live in `providers.ts`, `sessions` in `sessions.ts`.)
  *
  * Kept out of the entry point so they load only when asked for — the entry
  * point is on the path of every invocation, including `jean --version`.
  */
-
-export function runModelsCommand(): number {
-  line()
-  line(color.bold('Providers'))
-  for (const name of providerNames()) {
-    line(`  ${color.cyan(name.padEnd(16))} ${providerLabel(name)}`)
-  }
-  line()
-  line(color.bold('Catalog'))
-  for (const model of allModels()) {
-    const window = `${Math.round(model.contextWindow / 1000)}k`.padStart(6)
-    const price = model.inputCost !== undefined ? `$${model.inputCost}/$${model.outputCost}` : ''
-    const flags = [
-      model.supportsThinking ? 'thinking' : '',
-      model.supportsVision ? 'vision' : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
-    line(`  ${color.cyan(model.id.padEnd(34))} ${window}  ${color.dim(`${price.padEnd(14)} ${flags}`)}`)
-  }
-  line()
-  line(color.dim('  Any model id your provider serves works, listed or not.'))
-  line()
-  return 0
-}
 
 export function runMemoryCommand(positional: string[], config: JeanConfig, cwd: string): number {
   const { backend, warning } = openMemory(config)
@@ -99,40 +72,52 @@ export function runSkillsCommand(cwd: string): number {
   return 0
 }
 
-export function runPluginsCommand(cwd: string): number {
+/**
+ * `jean plugins` lists what is installed and which are enabled;
+ * `jean plugins enable <name>` and `disable <name>` change the user's list.
+ * Enabling is by name, never by presence: a plugin is code that runs inside
+ * Jean, and dropping a directory into `~/.jean/plugins` must not be enough.
+ */
+export function runPluginsCommand(positional: string[], config: JeanConfig, cwd: string): number {
+  const action = positional[0] ?? 'list'
+  const enabled = new Set(config.plugins?.enabled ?? [])
   const plugins = discoverPlugins(cwd)
+
+  if (action === 'enable' || action === 'disable') {
+    const name = positional[1]
+    if (!name) {
+      errorLine(`Usage: jean plugins ${action} <name>`)
+      return 2
+    }
+    if (action === 'enable' && !plugins.some((plugin) => plugin.manifest.name === name)) {
+      errorLine(`No plugin named "${name}" in ~/.jean/plugins or .jean/plugins.`)
+      return 1
+    }
+    if (action === 'enable') enabled.add(name)
+    else enabled.delete(name)
+    const path = setSetting('plugins.enabled', [...enabled].sort(), 'global', cwd)
+    line(`${color.green(symbols.check)} ${name} ${action}d ${color.dim(`(${path})`)}`)
+    if (action === 'enable') line(color.dim('  It loads in the next session, and reloads itself whenever its files change.'))
+    return 0
+  }
+  if (action !== 'list') {
+    errorLine(`Unknown action "${action}". Use list, enable <name>, or disable <name>.`)
+    return 2
+  }
+
   line()
   if (plugins.length === 0) {
-    line(color.dim('  No plugins installed.'))
+    line(color.dim('  No plugins installed. A plugin is a directory with a jean-plugin.json, in ~/.jean/plugins or .jean/plugins.'))
   } else {
     for (const plugin of plugins) {
-      line(`  ${color.cyan(plugin.manifest.name.padEnd(22))} ${plugin.manifest.version} [${plugin.source}]`)
+      const on = enabled.has(plugin.manifest.name)
+      line(`  ${on ? color.green('●') : color.dim('○')} ${color.cyan(plugin.manifest.name.padEnd(22))} ${plugin.manifest.version} [${plugin.source}]${on ? '' : color.dim('  disabled')}`)
       if (plugin.manifest.description) line(color.dim(`    ${plugin.manifest.description}`))
     }
     line()
-    line(
-      color.yellow(
-        `  ${symbols.warn} Plugin activation is not implemented yet — these are discovered but not loaded.`,
-      ),
-    )
+    line(color.dim(`  \`jean plugins enable <name>\` runs one. Hot reload is ${config.plugins?.hotReload === false ? 'off' : 'on'} (plugins.hotReload).`))
   }
   line()
   return 0
 }
 
-export function runSessionsCommand(cwd: string): number {
-  const sessions = listSessions(cwd, 20)
-  if (sessions.length === 0) {
-    line(color.dim('  No sessions in this directory yet.'))
-    return 0
-  }
-  line()
-  for (const session of sessions) {
-    line(`  ${color.cyan(session.id)} ${color.dim(new Date(session.updatedAt).toLocaleString())}`)
-    line(`    ${session.title}`)
-  }
-  line()
-  line(color.dim('  Resume with `jean resume <id>`.'))
-  line()
-  return 0
-}

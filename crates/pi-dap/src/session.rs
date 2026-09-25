@@ -175,6 +175,8 @@ struct Inner {
     output: Arc<Mutex<Output>>,
     /// For TCP adapters: where a child session connects.
     port: Option<u16>,
+    /// A child session — one the adapter asked for with `startDebugging`.
+    nested: bool,
     children: Mutex<Vec<Session>>,
     /// Every breakpoint set on this session, so a child session started
     /// later is configured with the same ones.
@@ -212,6 +214,16 @@ impl Session {
         };
         let session = Session::from_wire(wire, &spec.id, id, port, cwd, Arc::new(Mutex::new(Output::default())));
         session.initialize(&spec.id)?;
+        if spec.transport == Transport::Tcp {
+            // The adapter's stdio is not the protocol; from here on it is
+            // the program's (see `StderrTail::forward`).
+            let output = Arc::clone(&session.inner.output);
+            session.inner.stderr.forward(move |stream, line| {
+                if !inspector_chatter(line) && !line.starts_with("Debug server listening at") {
+                    lock(&output).push(stream, &format!("{line}\n"));
+                }
+            });
+        }
         Ok(session)
     }
 
@@ -240,6 +252,8 @@ impl Session {
             capabilities: Mutex::new(Json::Null),
             output,
             port,
+            // Children are named after their parent: `dbg-1.1`.
+            nested: id.contains('.'),
             children: Mutex::new(Vec::new()),
             breakpoints: Mutex::new(Breakpoints::default()),
             cwd: cwd.to_path_buf(),
@@ -349,9 +363,19 @@ impl Session {
 
     /// The session to talk to: the newest live child when the adapter
     /// started one (the program runs there), otherwise this one.
+    ///
+    /// Once every child has ended the newest one still answers: an adapter
+    /// that runs programs in children (js-debug) never runs one itself, so
+    /// its own "running" would hide that the program is over.
     pub fn target(&self) -> Session {
         let children = lock(&self.inner.children).clone();
-        children.iter().rev().find(|child| child.is_alive()).map(Session::target).unwrap_or_else(|| self.clone())
+        children
+            .iter()
+            .rev()
+            .find(|child| child.is_alive())
+            .or_else(|| children.last())
+            .map(Session::target)
+            .unwrap_or_else(|| self.clone())
     }
 
     /// Runs the launch sequence: `launch` (or `attach`), breakpoints and
@@ -496,14 +520,18 @@ impl Session {
                         .or_insert_with(|| std::fs::read_to_string(path).ok().map(|t| t.lines().map(String::from).collect()));
                     lines.as_ref().and_then(|lines| lines.get((line - 1).max(0) as usize).map(|l| l.trim().to_string()))
                 });
-                object([
+                let mut entry = object([
                     ("id", frame.at("id").cloned().unwrap_or(Json::Null)),
-                    ("name", string(frame.str_at("name").unwrap_or("?"))),
+                    ("name", string(frame_name(frame.str_at("name").unwrap_or("?")))),
                     ("path", path.map_or(Json::Null, string)),
                     ("line", int(line)),
                     ("column", int(frame.i64_at("column").unwrap_or(0))),
                     ("text", text.map_or(Json::Null, string)),
-                ])
+                ]);
+                if internal_frame(frame) {
+                    entry.set("internal", Json::Bool(true));
+                }
+                entry
             })
             .collect())
     }
@@ -520,6 +548,13 @@ impl Session {
         let items = result.at("variables").map(|v| v.items().to_vec()).unwrap_or_default();
         let mut out = Vec::new();
         for variable in items.iter().take(limit) {
+            let name = variable.str_at("name").unwrap_or_default();
+            // A nameless member that failed to evaluate says nothing: LLDB's
+            // Rust formatters produce them for a `Vec` read from a PDB.
+            let broken = name.is_empty() && variable.str_at("value").is_some_and(|value| value.starts_with("<error"));
+            if HIDDEN_MEMBERS.contains(&name) || broken {
+                continue;
+            }
             let child = variable.i64_at("variablesReference").unwrap_or(0);
             let value: String = variable.str_at("value").unwrap_or_default().chars().take(500).collect();
             let mut entry = object([
@@ -528,7 +563,7 @@ impl Session {
                 ("type", variable.at("type").cloned().unwrap_or(Json::Null)),
                 ("reference", int(child)),
             ]);
-            if depth > 0 && child > 0 {
+            if depth > 0 && child > 0 && worth_expanding(variable) {
                 if let Ok(children) = self.variables(child, depth - 1, limit) {
                     entry.set("children", children);
                 }
@@ -655,20 +690,37 @@ impl Session {
         }
         let Some(thread) = target.stopped_thread() else { return value };
         value.set("thread", int(thread));
+        value.set("threads", int(lock(&target.inner.state).threads.len().max(1) as i64));
         let frames = target.stack(thread, levels.max(1)).unwrap_or_default();
         if let Some(frame) = frames.get(frame_index).or_else(|| frames.first()) {
             if let Some(frame_id) = frame.i64_at("id") {
-                let mut scopes = Vec::new();
+                let mut scopes: Vec<Json> = Vec::new();
                 for scope in target.scopes(frame_id).unwrap_or_default() {
                     let expensive = scope.bool_at("expensive").unwrap_or(false);
                     let reference = scope.i64_at("variablesReference").unwrap_or(0);
-                    let variables = if expensive || reference == 0 { Json::Null } else { target.variables(reference, depth, 40).unwrap_or(Json::Null) };
-                    scopes.push(object([
+                    let name = scope.str_at("name").unwrap_or_default();
+                    // A native debugger's statics, globals, and registers run to
+                    // thousands of entries of the runtime's own state.
+                    let bulky = matches!(name, "Static" | "Global" | "Registers") || scope.str_at("presentationHint") == Some("registers");
+                    let variables = if expensive || bulky || reference == 0 {
+                        Json::Null
+                    } else {
+                        target.variables(reference, depth, 40).map(without_module_wrapper).unwrap_or(Json::Null)
+                    };
+                    let mut entry = object([
                         ("name", string(scope.str_at("name").unwrap_or("scope"))),
                         ("reference", int(reference)),
                         ("expensive", Json::Bool(expensive)),
-                        ("variables", variables),
-                    ]));
+                        ("variables", Json::Null),
+                    ]);
+                    // At a module's top level Python's globals are its locals:
+                    // say so rather than list them twice.
+                    let twin = scopes.iter().find(|other| !variables.items().is_empty() && same_names(other.at("variables"), &variables));
+                    match twin.and_then(|other| other.str_at("name")) {
+                        Some(twin) => entry.set("sameAs", string(twin)),
+                        None => entry.set("variables", variables),
+                    }
+                    scopes.push(entry);
                 }
                 value.set("scopes", array(scopes));
             }
@@ -784,13 +836,95 @@ fn handle(inner: &Arc<Inner>, message: Json) {
     }
 }
 
+/// What Node's inspector says about itself on the program's stderr — not the
+/// program's output.
+fn inspector_chatter(text: &str) -> bool {
+    let line = text.trim();
+    matches!(line, "Debugger attached." | "Waiting for the debugger to disconnect..." | "For help, see: https://nodejs.org/en/docs/inspector")
+        || line.starts_with("Debugger listening on ws://")
+        || line.starts_with("Debugger ending on ws://")
+}
+
+/// Members that describe the language, not the value: a prototype chain, a
+/// closure's scopes.
+const HIDDEN_MEMBERS: [&str; 5] = ["[[Prototype]]", "[[Scopes]]", "[[FunctionLocation]]", "__proto__", "[raw]"];
+
+/// Whether a value is worth opening when the caller did not ask for it by
+/// reference: a function, module, or class holds nothing about the state
+/// being debugged, and debugpy's "special variables" groups hold dunders.
+fn worth_expanding(variable: &Json) -> bool {
+    if variable.str_at("presentationHint.kind") == Some("virtual") {
+        return false;
+    }
+    let name = variable.str_at("name").unwrap_or_default();
+    if name.ends_with(" variables") || name.starts_with("__") {
+        return false;
+    }
+    // `<variable not available>`, `<error: ...>`: nothing to open.
+    if variable.str_at("value").is_some_and(|value| value.starts_with('<')) {
+        return false;
+    }
+    let kind = variable.str_at("type").unwrap_or_default();
+    !matches!(
+        kind,
+        "function" | "Function" | "AsyncFunction" | "GeneratorFunction" | "method" | "builtin_function_or_method" | "module" | "Module" | "type" | "class"
+    )
+}
+
+/// A frame name as a reader writes it. js-debug names a method after the
+/// source of its class: `function Module(id = '', parent) {.load` is
+/// `Module.load`.
+fn frame_name(name: &str) -> String {
+    let Some((head, method)) = name.rsplit_once("{.") else { return name.to_string() };
+    let head = head.trim_start_matches("async ").trim_start_matches("function ").trim_start_matches("class ");
+    let owner = head.split(|c: char| c == '(' || c == '{' || c.is_whitespace()).next().unwrap_or_default();
+    if owner.is_empty() { method.to_string() } else { format!("{owner}.{method}") }
+}
+
+/// A frame in the runtime rather than the program: Node's internals, or
+/// what the adapter itself marks as not the user's code.
+fn internal_frame(frame: &Json) -> bool {
+    if frame.str_at("source.presentationHint") == Some("deemphasize") || frame.str_at("presentationHint") == Some("subtle") {
+        return true;
+    }
+    let Some(path) = frame.str_at("source.path").or_else(|| frame.str_at("source.name")) else { return false };
+    let path = path.replace('\\', "/").to_lowercase();
+    path.starts_with('<') || RUNTIME_SOURCES.iter().any(|runtime| path.contains(runtime)) || path.starts_with("/rustc/")
+}
+
+/// Where language runtimes keep the sources a native debugger finds for its
+/// own frames: Rust's standard library, the MSVC C runtime, Go's runtime.
+const RUNTIME_SOURCES: [&str; 5] = ["/rustlib/src/rust/library/", "/vctools/crt/", "/crt/src/", "/go/src/runtime/", "/usr/include/c++/"];
+
+fn same_names(left: Option<&Json>, right: &Json) -> bool {
+    let names = |list: &Json| list.items().iter().map(|v| (v.str_at("name").map(String::from), v.str_at("value").map(String::from))).collect::<Vec<_>>();
+    left.is_some_and(|left| names(left) == names(right))
+}
+
+/// The CommonJS wrapper's parameters, which every Node module's top-level
+/// scope holds and no one is debugging.
+const MODULE_WRAPPER: [&str; 5] = ["exports", "require", "module", "__filename", "__dirname"];
+
+fn without_module_wrapper(variables: Json) -> Json {
+    let items = variables.items().to_vec();
+    let named = |name: &str| items.iter().any(|v| v.str_at("name") == Some(name));
+    if !MODULE_WRAPPER.iter().all(|name| named(name)) {
+        return variables;
+    }
+    array(items.into_iter().filter(|v| {
+        let name = v.str_at("name").unwrap_or_default();
+        !MODULE_WRAPPER.contains(&name) && !(name == "this" && v.str_at("value") == Some("Object"))
+    }))
+}
+
 fn event(inner: &Arc<Inner>, message: &Json) {
     let name = message.str_at("event").unwrap_or_default().to_string();
     let body = message.at("body").cloned().unwrap_or(Json::Null);
     if name == "output" {
         let category = body.str_at("category").unwrap_or("console");
-        if category != "telemetry" {
-            lock(&inner.output).push(category, body.str_at("output").unwrap_or_default());
+        let text = body.str_at("output").unwrap_or_default();
+        if category != "telemetry" && !inspector_chatter(text) {
+            lock(&inner.output).push(category, text);
         }
         inner.changed.notify_all();
         return;
@@ -818,6 +952,15 @@ fn event(inner: &Arc<Inner>, message: &Json) {
         "terminated" => {
             if !matches!(state.status, Some(Status::Exited)) {
                 state.status = Some(Status::Terminated);
+            }
+            // A child session's program waits for its debugger to go
+            // ("Waiting for the debugger to disconnect...") and the parent
+            // ends only after it does, so answer `terminated` as editors do.
+            if inner.nested {
+                let session = Session { inner: Arc::clone(inner) };
+                thread::spawn(move || {
+                    let _ = session.request("disconnect", object([("restart", Json::Bool(false))]), Duration::from_secs(3));
+                });
             }
         }
         "thread" => {

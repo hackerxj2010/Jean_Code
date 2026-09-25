@@ -136,10 +136,9 @@ function asString(value: string | string[] | undefined): string | undefined {
  * Project skills win over user skills of the same name: a repository's own way
  * of doing something is more specific than a personal default.
  */
-export function discoverSkills(cwd: string): Skill[] {
-  const found = new Map<string, Skill>()
-
-  const roots: [string, Skill['source']][] = [
+/** Where skills are looked for, lowest precedence first. */
+export function skillRoots(cwd: string): [string, Skill['source']][] {
+  return [
     // Bundled skills ship with the repository. They sit lowest so a user or
     // project skill of the same name replaces them entirely.
     [builtinSkillsDir(), 'builtin'],
@@ -149,8 +148,33 @@ export function discoverSkills(cwd: string): Skill[] {
     // Skills written for Claude Code use the same format and directory shape.
     [join(cwd, '.claude', 'skills'), 'project'],
   ]
+}
 
-  for (const [root, source] of roots) {
+/**
+ * A fingerprint of every SKILL.md: which exist and when each last changed.
+ * A few `stat` calls — cheap enough to take before every turn, so a skill
+ * written by hand in another window is there on the next prompt.
+ */
+export function skillsSignature(cwd: string): string {
+  const parts: string[] = []
+  for (const [root] of skillRoots(cwd)) {
+    if (!existsSync(root)) continue
+    for (const entry of safeReaddir(root)) {
+      const file = join(root, entry, 'SKILL.md')
+      try {
+        parts.push(`${file}:${statSync(file).mtimeMs}`)
+      } catch {
+        // No SKILL.md in that directory: not a skill.
+      }
+    }
+  }
+  return parts.join('|')
+}
+
+export function discoverSkills(cwd: string): Skill[] {
+  const found = new Map<string, Skill>()
+
+  for (const [root, source] of skillRoots(cwd)) {
     if (!existsSync(root)) continue
     for (const entry of safeReaddir(root)) {
       const dir = join(root, entry)

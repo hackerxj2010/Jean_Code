@@ -3,6 +3,7 @@ import { match } from 'ts-pattern'
 import type { StreamChunk } from '@codebuff/sdk'
 
 import {
+  appendTextToAgentBlock,
   appendTextToRootStream,
   appendToolToAgentBlock,
   closeNativeReasoningBlock,
@@ -229,6 +230,15 @@ const handleSubagentStart = (
   updateStreamingAgents(state, { add: event.agentId })
 }
 
+/** A finished sub-agent's report: Jean's `spawn` result, or plain text. */
+const reportOf = (output: unknown): string => {
+  if (typeof output === 'string') return output.trim()
+  if (output && typeof output === 'object' && typeof (output as { output?: unknown }).output === 'string') {
+    return ((output as { output: string }).output).trim()
+  }
+  return ''
+}
+
 const handleSubagentFinish = (
   state: EventHandlerState,
   event: PrintModeSubagentFinish,
@@ -240,8 +250,10 @@ const handleSubagentFinish = (
   state.streaming.streamRefs.setters.removeAgentAccumulator(event.agentId)
   state.subagents.removeActiveSubagent(event.agentId)
 
+  // The report is what the agent was for: without it the block ends empty.
+  const report = reportOf(event.output)
   state.message.updater.updateAiMessageBlocks((blocks) =>
-    markAgentComplete(blocks, event.agentId),
+    markAgentComplete(report ? appendTextToAgentBlock(blocks, event.agentId, report) : blocks, event.agentId),
   )
 
   updateStreamingAgents(state, { remove: event.agentId })

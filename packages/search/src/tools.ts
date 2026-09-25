@@ -1,4 +1,4 @@
-import { ToolError, type Tool, type ToolResult } from '@jean/tools'
+import { ToolError, type ReadSource, type Tool, type ToolResult } from '@jean/tools'
 import { renderResults, SearchChain } from './chain.ts'
 import { fetchPage } from './fetch.ts'
 
@@ -134,4 +134,24 @@ export function createSearchTools(chain: SearchChain = new SearchChain()): Tool[
   }
 
   return [searchTool as Tool, fetchTool as Tool, providersTool as Tool]
+}
+
+/** `read https://…` — a web page as text, the way `web_fetch` reads it. */
+export function createUrlReadSource(): ReadSource {
+  return {
+    name: 'url',
+    matches: (path) => /^https?:\/\//i.test(path),
+    async read(path, _args, context) {
+      try {
+        const page = await fetchPage(path, { maxChars: 60_000, signal: context.signal })
+        const header = page.title ? `# ${page.title}\n${page.url}\n` : `${page.url}\n`
+        return {
+          output: `${header}\n${page.text}${page.truncated ? '\n\n[truncated — use `web_fetch` with a larger maxChars]' : ''}`,
+          display: { kind: 'fetch', url: page.url, bytes: page.text.length },
+        }
+      } catch (err) {
+        throw new ToolError(`Could not fetch ${path}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    },
+  }
 }

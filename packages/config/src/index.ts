@@ -7,6 +7,8 @@
  */
 export * from './types.ts'
 export { defaultConfig, globalConfigPath, jeanHome } from './defaults.ts'
+export { authPath, readAuth, removeKey, saveKey, savedKey } from './auth.ts'
+export type { SavedCredential } from './auth.ts'
 export {
   expandEnv,
   merge,

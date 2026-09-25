@@ -57,6 +57,8 @@ pub const METHODS: &[&str] = &[
     "tokens.count",
     "voice.probe",
     "voice.prepare",
+    "voice.record",
+    "voice.recorders",
 ];
 
 /// Whether a method is served by the language-server or debugger hubs. Those
@@ -64,7 +66,8 @@ pub const METHODS: &[&str] = &[
 /// runs them on their own threads so one slow `references` does not hold up
 /// every `grep` behind it.
 pub fn runs_apart(method: &str) -> bool {
-    method.starts_with("lsp.") || method.starts_with("dap.")
+    // A recording lasts as long as the speaker talks; nothing else waits on it.
+    method.starts_with("lsp.") || method.starts_with("dap.") || method == "voice.record"
 }
 
 /// Answers an `lsp.*` or `dap.*` request. Needs no bridge state: the hubs
@@ -75,6 +78,8 @@ pub fn dispatch_apart(request: &Request) -> String {
         pi_lsp::hub().call(method, &params)
     } else if let Some(method) = request.method.strip_prefix("dap.") {
         pi_dap::hub().call(method, &params)
+    } else if request.method == "voice.record" {
+        ops::voice_record(request)
     } else {
         Err(format!("unknown method: {}", request.method))
     };
@@ -153,6 +158,7 @@ pub fn dispatch(request: &Request, state: &mut State) -> String {
 
         "voice.probe" => ops::voice_probe(request),
         "voice.prepare" => ops::voice_prepare(request),
+        "voice.recorders" => Ok(ops::voice_recorders()),
 
         other => Err(format!("unknown method: {other}")),
     };

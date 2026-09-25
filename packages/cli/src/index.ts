@@ -68,6 +68,12 @@ async function main(argv: string[]): Promise<number> {
     errorLine(color.yellow(`${symbols.warn} ${warning}`))
   }
 
+  // No model named anywhere and no key for the default provider: start on
+  // the model picked last, or on a provider that has a key.
+  const { chooseModel } = await import('@jean/model')
+  const choice = chooseModel(loaded.config, loaded.modelChosen ?? true)
+  if (choice.note) errorLine(color.dim(`  ${choice.note}`))
+  loaded.config = choice.config
   const config = loaded.config
 
   switch (args.command) {
@@ -117,23 +123,68 @@ async function main(argv: string[]): Promise<number> {
     case 'debug':
       return (await import('./commands/languages.ts')).runDebugCommand(args.positional, config, cwd)
 
+    case 'setup':
+      return (await import('./commands/setup.ts')).runSetupCommand(args.positional, config, cwd)
+
+    case 'voice':
+      return (await import('./commands/voice.ts')).runVoiceCommand(args.positional, config, cwd)
+
     case 'config':
       return runConfigCommand(args.positional, loaded, cwd)
 
     case 'models':
-      return (await import('./commands/info.ts')).runModelsCommand()
+      return (await import('./commands/providers.ts')).runModelsCommand(args.positional, config, args.flags)
+
+    case 'providers':
+      return (await import('./commands/providers.ts')).runProvidersCommand(config, args.flags)
+
+    case 'auth':
+      return (await import('./commands/providers.ts')).runAuthCommand(args.positional, config)
 
     case 'memory':
       return (await import('./commands/info.ts')).runMemoryCommand(args.positional, config, cwd)
 
     case 'sessions':
-      return (await import('./commands/info.ts')).runSessionsCommand(cwd)
+      return (await import('./commands/sessions.ts')).runSessionsCommand(args.positional, cwd, args.flags)
+
+    case 'export':
+      return (await import('./commands/sessions.ts')).runExportCommand(args.positional, cwd, args.flags)
+
+    case 'serve':
+      return (await import('./commands/server.ts')).runServeCommand(args.positional, cwd, args.flags)
+
+    case 'agents':
+      return (await import('./commands/manage.ts')).runAgentsCommand(args.positional, cwd, args.flags)
+
+    case 'mcp':
+      return (await import('./commands/manage.ts')).runMcpCommand(args.positional, config, cwd, args.flags)
+
+    case 'upgrade':
+      return (await import('./commands/manage.ts')).runUpgradeCommand(args.flags)
+
+    case 'pr': {
+      const checkedOut = await (await import('./commands/manage.ts')).checkoutPullRequest(args.positional, cwd)
+      if (!checkedOut) return 1
+      // The session that follows works on the pull request's branch.
+      args.command = undefined
+      args.positional = []
+      break
+    }
+
+    case 'attach':
+      return (await import('./commands/server.ts')).runAttachCommand(args.positional, args.flags)
+
+    case 'import':
+      return (await import('./commands/sessions.ts')).runImportCommand(args.positional)
+
+    case 'stats':
+      return (await import('./commands/sessions.ts')).runStatsCommand(cwd, args.flags)
 
     case 'skills':
       return (await import('./commands/info.ts')).runSkillsCommand(cwd)
 
     case 'plugins':
-      return (await import('./commands/info.ts')).runPluginsCommand(cwd)
+      return (await import('./commands/info.ts')).runPluginsCommand(args.positional, config, cwd)
 
     case 'search':
       return (await import('./commands/extras.ts')).runSearchCommand(args.positional)
@@ -169,7 +220,7 @@ async function main(argv: string[]): Promise<number> {
   if (args.command === 'autonomous' || args.command === 'swarm') {
     mode = args.command
     inlinePrompt = args.positional.join(' ') || undefined
-  } else if (args.command && !args.flags.resume) {
+  } else if (args.command && args.flags.resume === undefined && args.flags.continue !== true) {
     // `jean "do the thing"` — the whole command line is the prompt.
     inlinePrompt = [args.command, ...args.positional].join(' ')
   }
@@ -183,14 +234,27 @@ async function main(argv: string[]): Promise<number> {
   let store
   let sessionId: string | undefined
   const resumeFlag = args.flags.resume
-  if (args.command === 'resume' || resumeFlag !== undefined) {
+  // `--continue` is the last session here; `--fork` goes on in a copy of it,
+  // leaving the original as it was.
+  if (args.command === 'resume' || resumeFlag !== undefined || args.flags.continue === true) {
     const requested =
-      typeof resumeFlag === 'string' && resumeFlag !== 'true' ? resumeFlag : args.positional[0]
-    const { latestSession, loadSession } = await import('@jean/core')
-    const target = requested ?? latestSession(cwd)?.id
+      typeof resumeFlag === 'string' && resumeFlag !== 'true'
+        ? resumeFlag
+        : args.command === 'resume'
+          ? args.positional[0]
+          : undefined
+    const { forkSession, latestSession, loadSession } = await import('@jean/core')
+    let target = requested ?? latestSession(cwd)?.id
     if (!target) {
       errorLine(color.red('No previous session in this directory.'))
       return 1
+    }
+    if (args.flags.fork === true) {
+      const fork = forkSession(target)
+      if (fork) {
+        errorLine(color.dim(`  Continuing in ${fork}, a copy of ${target}.`))
+        target = fork
+      }
     }
     store = loadSession(target)
     if (!store) {
@@ -198,6 +262,11 @@ async function main(argv: string[]): Promise<number> {
       return 1
     }
     sessionId = target
+  }
+
+  // `-p "…" --attach <url>`: the prompt runs on a Jean server, not here.
+  if (prompt && typeof args.flags.attach === 'string') {
+    return (await import('./commands/server.ts')).runAttachCommand([], args.flags, prompt)
   }
 
   // A prompt with `-p`, or any prompt on a non-TTY stdin, runs one-shot.
