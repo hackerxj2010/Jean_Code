@@ -415,7 +415,7 @@ const ALL_COMMANDS: CommandDefinition[] = [
       const requested = args.trim().toLowerCase()
       let reply: string
       if (!requested) {
-        reply = `Current theme: ${theme.name}. Available: ${THEME_NAMES.join(', ')}. Use /theme <name> to switch.`
+        reply = `Current theme: ${theme.name}. Available: ${THEME_NAMES.join(', ')}. Type /theme and a name to switch.`
       } else if (isThemeName(requested)) {
         selectTheme(requested)
         reply = `Switched to ${requested} theme.`

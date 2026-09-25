@@ -137,13 +137,6 @@ export function adaptOutput(
             ...(isRecord(typed.display) && typeof typed.display.cwd === 'string'
               ? { startingCwd: typed.display.cwd }
               : {}),
-            // The card shows how the command ended, not just what it printed.
-            ...(isRecord(typed.display) && typeof typed.display.exitCode === 'number'
-              ? { exitCode: typed.display.exitCode }
-              : {}),
-            ...(isRecord(typed.display) && typed.display.timedOut === true
-              ? { timedOut: true }
-              : {}),
           },
         },
       ]
