@@ -168,6 +168,9 @@ export class AnthropicProvider implements Provider {
     let usage: Usage = { inputTokens: 0, outputTokens: 0 }
     let servedModel = model
     let stopReason: StopReason = 'stop'
+    // Set by `message_stop`, or by the stop reason that precedes it (some
+    // compatible proxies omit `message_stop`). A stream with neither was cut off.
+    let finished = false
     // Anthropic streams block-by-block, keyed by index.
     const partial = new Map<
       number,
@@ -238,8 +241,14 @@ export class AnthropicProvider implements Provider {
           partial.delete(index)
           break
         }
+        case 'message_stop':
+          finished = true
+          break
         case 'message_delta': {
-          if (event.delta?.stop_reason) stopReason = mapStopReason(event.delta.stop_reason)
+          if (event.delta?.stop_reason) {
+            stopReason = mapStopReason(event.delta.stop_reason)
+            finished = true
+          }
           if (event.usage?.output_tokens !== undefined) {
             usage = { ...usage, outputTokens: event.usage.output_tokens }
           }
@@ -253,6 +262,17 @@ export class AnthropicProvider implements Provider {
           return
         }
       }
+    }
+
+    // The connection dropped mid-message: blocks without `content_block_stop`
+    // are half-written, and reporting what arrived as a finished turn would
+    // pass a truncated answer (or a half-built tool call) off as complete.
+    if (!finished || partial.size > 0) {
+      yield {
+        type: 'error',
+        error: new ProviderError('the response stream ended before the message was complete', this.name, undefined, true),
+      }
+      return
     }
 
     yield { type: 'usage', usage }

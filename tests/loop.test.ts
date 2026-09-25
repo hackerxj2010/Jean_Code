@@ -543,3 +543,25 @@ describe('context management', () => {
     expect(rendered).toContain('TOOL RESULT grep: a match')
   })
 })
+
+describe('bounded parallelism', () => {
+  test('mapLimit never runs more than the limit at once, and keeps order', async () => {
+    const { mapLimit } = await import('../packages/core/src/index.ts')
+    let running = 0
+    let peak = 0
+    const results = await mapLimit([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 3, async (n) => {
+      running++
+      peak = Math.max(peak, running)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      running--
+      return n * 10
+    })
+    expect(peak).toBe(3)
+    expect(results).toEqual([10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+  })
+
+  test('mapLimit handles an empty list', async () => {
+    const { mapLimit } = await import('../packages/core/src/index.ts')
+    expect(await mapLimit([], 4, async () => 1)).toEqual([])
+  })
+})

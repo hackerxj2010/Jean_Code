@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 
 /**
  * Persistent language kernels (architecture §8.4).
@@ -38,14 +38,28 @@ export interface KernelOptions {
   onError?: (message: string) => void
 }
 
-/** Marks the end of one execution's output, so user prints are unambiguous. */
-const SENTINEL = '__JEAN_KERNEL_DONE__'
+/**
+ * Marks the kernel's own protocol lines. Each kernel gets a random one: user
+ * output shares the stream, and a fixed marker could be printed by accident
+ * (a file's contents, a log) and end an execution early or pose as a tool
+ * call from the kernel.
+ */
+function newSentinel(): string {
+  return `__JEAN_KERNEL_${randomBytes(12).toString('hex')}__`
+}
 
 export class Kernel {
   readonly language: KernelLanguage
 
   private readonly options: KernelOptions
+  private readonly sentinel = newSentinel()
   private process?: ChildProcess
+  /**
+   * Bumped by every start and stop. A start that finds it changed was
+   * cancelled, and events from a process that is no longer current are
+   * ignored — otherwise a killed kernel's exit settles the next one's probe.
+   */
+  private generation = 0
   private starting?: Promise<boolean>
   private ready = false
   private disposed = false
@@ -73,7 +87,9 @@ export class Kernel {
   }
 
   private async doStart(): Promise<boolean> {
-    const runner = this.language === 'python' ? PYTHON_RUNNER : JS_RUNNER
+    const generation = ++this.generation
+    const runner =
+      this.language === 'python' ? pythonRunner(this.sentinel) : jsRunner(this.sentinel)
     const command = this.language === 'python' ? pythonCommand() : 'bun'
     const args = this.language === 'python' ? ['-u', '-c', runner] : ['-e', runner]
 
@@ -88,16 +104,23 @@ export class Kernel {
       return false
     }
 
-    this.process.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk.toString()))
-    this.process.stderr?.on('data', (chunk: Buffer) => {
+    const child = this.process
+    const current = () => child === this.process
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (current()) this.onStdout(chunk.toString())
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (!current()) return
       if (this.pending) this.pending.stderr.push(chunk.toString())
       else this.options.onError?.(`[${this.language}] ${chunk.toString().slice(0, 300)}`)
     })
-    this.process.on('exit', (code) => {
+    child.on('exit', (code) => {
+      if (!current()) return
       this.ready = false
       this.settle({ error: `the ${this.language} kernel exited with code ${code}` })
     })
-    this.process.on('error', (err) => {
+    child.on('error', (err) => {
+      if (!current()) return
       this.ready = false
       this.settle({ error: err.message })
     })
@@ -105,6 +128,9 @@ export class Kernel {
     // A kernel that fails to start does so immediately; a short probe is more
     // useful than discovering it on the first real execution.
     const probe = await this.executeInternal(this.language === 'python' ? 'pass' : 'null', 10_000)
+    // Stopped (or restarted) while the probe was in flight: this start no
+    // longer owns the kernel and must not mark it ready.
+    if (generation !== this.generation) return false
     if (probe.error) {
       this.options.onError?.(`the ${this.language} kernel failed to start: ${probe.error}`)
       this.stop()
@@ -176,7 +202,7 @@ export class Kernel {
   }
 
   private onLine(line: string): void {
-    if (!line.startsWith(SENTINEL)) {
+    if (!line.startsWith(this.sentinel)) {
       // Anything else is the user's own output.
       this.pending?.stdout.push(line)
       return
@@ -184,7 +210,7 @@ export class Kernel {
 
     let payload: { value?: string; error?: string; call?: { tool: string; args: unknown } }
     try {
-      payload = JSON.parse(line.slice(SENTINEL.length)) as typeof payload
+      payload = JSON.parse(line.slice(this.sentinel.length)) as typeof payload
     } catch {
       payload = {}
     }
@@ -252,6 +278,9 @@ export class Kernel {
     this.ready = false
     this.disposed = true
     this.starting = undefined
+    this.generation++
+    // Whatever was waiting on the old process will not hear from it now.
+    this.settle({ error: `the ${this.language} kernel was stopped` })
 
     const child = this.process
     this.process = undefined
@@ -281,10 +310,11 @@ function message(err: unknown): string {
  * final statement in `eval` mode when it is an expression — because an agent
  * exploring data expects the value of what it typed.
  */
-const PYTHON_RUNNER = `
+function pythonRunner(sentinel: string): string {
+  return `
 import sys, json, io, ast, traceback, contextlib
 
-SENTINEL = "${SENTINEL}"
+SENTINEL = "${sentinel}"
 namespace = {"__name__": "__jean__"}
 
 class _Bridge:
@@ -347,6 +377,7 @@ for line in sys.stdin:
 
     print(SENTINEL + json.dumps({"value": value, "error": error}), flush=True)
 `
+}
 
 /**
  * The JavaScript side of the kernel.
@@ -354,8 +385,9 @@ for line in sys.stdin:
  * Same contract as the Python runner. Uses an async function wrapper so
  * top-level `await` works, which is what anyone exploring an API expects.
  */
-const JS_RUNNER = `
-const SENTINEL = "${SENTINEL}"
+function jsRunner(sentinel: string): string {
+  return `
+const SENTINEL = "${sentinel}"
 const context = {}
 
 globalThis.jean = {
@@ -428,3 +460,4 @@ process.stdin.on("data", async (chunk) => {
   }
 })
 `
+}

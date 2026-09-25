@@ -340,7 +340,9 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
         })
       }
 
-      const results = await Promise.all(batch.map((call) => runOne(call)))
+      // Bounded: a model that issues thirty `spawn` calls in one turn gets
+      // them run a few at a time, not thirty agents at once.
+      const results = await mapLimit(batch, MAX_PARALLEL_CALLS, (call) => runOne(call))
 
       batch.forEach((call, i) => {
         const { result, durationMs } = results[i]!
@@ -393,6 +395,30 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
       error,
     }
   }
+}
+
+/** Parallel-safe calls from one turn that run at the same time, at most. */
+export const MAX_PARALLEL_CALLS = 8
+
+/**
+ * `Promise.all(items.map(fn))`, but with at most `limit` running at once.
+ * Results keep the order of `items`.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++
+      results[index] = await fn(items[index]!, index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker))
+  return results
 }
 
 /**

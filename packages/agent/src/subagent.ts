@@ -1,5 +1,5 @@
 import type { JeanConfig, ModelRole } from '@jean/config'
-import { buildSubagentPrompt, EventStore, runLoop, type LoopEvent } from '@jean/core'
+import { buildSubagentPrompt, EventStore, mapLimit, runLoop, type LoopEvent } from '@jean/core'
 import { ModelClient } from '@jean/model'
 import { Registry, createSessionState, type Tool, type ToolContext } from '@jean/tools'
 import { createWorktree, type Worktree } from '@jean/subagents'
@@ -97,6 +97,9 @@ function keep(id: string, paused: Paused): void {
 
 /** Deepest nesting allowed. Beyond this, spawning is refused, not silently ignored. */
 export const MAX_DEPTH = 3
+
+/** Sub-agents `fanOut` runs at once. */
+export const MAX_FANOUT = 4
 
 /**
  * Runs one sub-agent to completion.
@@ -288,7 +291,9 @@ export async function fanOut(
   tasks: { agent: string; task: string }[],
   options: SpawnOptions,
 ): Promise<SubagentResult[]> {
-  return Promise.all(tasks.map((t) => spawnSubagent(t.agent, t.task, options)))
+  // Depth is capped by MAX_DEPTH; breadth by this. Each sub-agent is a full
+  // model conversation, so an unbounded fan-out is an unbounded bill.
+  return mapLimit(tasks, MAX_FANOUT, (t) => spawnSubagent(t.agent, t.task, options))
 }
 
 /** The `spawn` tool, which is how the model reaches all of this. */

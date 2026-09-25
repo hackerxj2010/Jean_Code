@@ -112,6 +112,14 @@ export class LspClient {
       return false
     }
 
+    // A missing binary is reported asynchronously, and the broken pipe that
+    // follows would otherwise be the only message ("no longer accepting
+    // input"). Keep the real cause to report instead.
+    let spawnError: string | undefined
+    this.process.once('error', (err) => {
+      spawnError = err.message
+    })
+
     // stderr is where servers report their own problems; surfacing it is the
     // difference between "LSP is broken" and a message naming the cause.
     this.process.stderr?.on('data', (chunk: Buffer) => {
@@ -151,7 +159,11 @@ export class LspClient {
       this.initialized = true
       return true
     } catch (err) {
-      this.fail(`${this.spec.id} failed to initialize: ${message(err)}`)
+      this.fail(
+        spawnError
+          ? `could not start ${this.spec.id}: ${spawnError}`
+          : `${this.spec.id} failed to initialize: ${message(err)}`,
+      )
       return false
     }
   }
@@ -505,6 +517,10 @@ export class LspClient {
   stop(): void {
     this.initialized = false
     this.starting = undefined
+    // Open documents belong to the server that was told about them. A
+    // restarted server has none open, so the next sync must be `didOpen`,
+    // not a `didChange` for a document it never saw.
+    this.open.clear()
     try {
       this.connection?.notify('shutdown')
       this.connection?.notify('exit')

@@ -28,7 +28,15 @@ export {
 export type { CompactionResult } from './compaction.ts'
 export { Freshness } from './freshness.ts'
 export { FileHistory, type RedoResult, type RewindResult } from './history.ts'
-export { partition, RepeatTracker, runLoop, stableStringify, textOf } from './loop.ts'
+export {
+  MAX_PARALLEL_CALLS,
+  mapLimit,
+  partition,
+  RepeatTracker,
+  runLoop,
+  stableStringify,
+  textOf,
+} from './loop.ts'
 export type {
   AfterToolDecision,
   BeforeToolDecision,

@@ -168,6 +168,19 @@ describe('anthropic wire format', () => {
     })
   })
 
+  test('a stream that drops mid-message is an error, not a finished turn', async () => {
+    mockSSE([
+      { type: 'message_start', message: { model: 'claude', usage: {} } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'The fix is to' } },
+    ])
+    const provider = new AnthropicProvider({ apiKey: 'test' })
+    const events = await drain(provider.stream('claude', { messages: conversation }))
+    expect(events.some((e) => e.type === 'done')).toBe(false)
+    const error = events.find((e) => e.type === 'error') as Extract<StreamEvent, { type: 'error' }>
+    expect(error.error.message).toContain('ended before the message was complete')
+  })
+
   test('a tool call cut off by max_tokens is reported as truncated', async () => {
     mockSSE([
       { type: 'message_start', message: { model: 'claude', usage: {} } },

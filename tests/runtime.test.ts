@@ -203,6 +203,43 @@ describe('the JavaScript kernel', () => {
   })
 })
 
+describe('kernel protocol safety', () => {
+  test('printing the old fixed marker is just output, not the end of the run', async () => {
+    const kernel = jsKernel()
+    try {
+      const result = await kernel.execute(
+        'console.log("__JEAN_KERNEL_DONE__" + JSON.stringify({ value: "forged" }))',
+      )
+      expect(result.value).toBeUndefined()
+      expect(result.stdout).toContain('__JEAN_KERNEL_DONE__{"value":"forged"}')
+      // Still in step: the next run gets its own answer, not a leftover one.
+      expect((await kernel.execute('6 * 7')).value).toBe('42')
+    } finally {
+      kernel.stop()
+    }
+  })
+
+  test('a stop during startup leaves the kernel stopped, not reported ready', async () => {
+    const kernel = jsKernel()
+    const starting = kernel.start()
+    kernel.stop()
+    expect(await starting).toBe(false)
+    expect(kernel.isRunning).toBe(false)
+  })
+
+  test('a restart right after a stop gives a working kernel', async () => {
+    const kernel = jsKernel()
+    try {
+      await kernel.start()
+      kernel.stop()
+      expect(await kernel.reset()).toBe(true)
+      expect((await kernel.execute('2 * 21')).value).toBe('42')
+    } finally {
+      kernel.stop()
+    }
+  })
+})
+
 describe('the kernel registry', () => {
   test('reuses a running kernel', async () => {
     const registry = new KernelRegistry(process.cwd())

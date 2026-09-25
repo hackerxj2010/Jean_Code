@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
+  LspClient,
   BUILTIN_SERVERS,
   Connection,
   extensionOf,
@@ -252,5 +253,26 @@ describe('the LSP transport', () => {
     stop()
     // Without this the agent would wait the full timeout on a dead server.
     await expect(pending).rejects.toThrow()
+  })
+})
+
+describe('client lifecycle', () => {
+  test('a server that is not installed is reported by name, without crashing', async () => {
+    const errors: string[] = []
+    const client = new LspClient({
+      spec: { id: 'missing', command: ['jean-no-such-language-server'], extensions: ['.ts'] } as never,
+      root: tmpdir(),
+      onError: (message) => errors.push(message),
+    })
+    expect(await client.start()).toBe(false)
+    expect(errors.join('\n')).toMatch(/could not start missing: .*(not found|ENOENT)/i)
+  })
+
+  test('stopping forgets open documents, so a restarted server gets didOpen again', () => {
+    const client = new LspClient({ spec: { id: 'x', command: ['x'], extensions: ['.ts'] } as never, root: tmpdir() })
+    const open = (client as unknown as { open: Map<string, unknown> }).open
+    open.set('/p/a.ts', { version: 3, text: 'x' })
+    client.stop()
+    expect(open.size).toBe(0)
   })
 })
