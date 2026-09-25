@@ -41,7 +41,7 @@ export const OptionsList: React.FC<OptionsListProps> = memo(
 
     const isCustomSelected = answer?.isCustom ?? false
     const isCustomFocused = focusedOptionIndex === question.options.length || isTypingCustom
-    const selectedFg = theme.name === 'dark' ? '#ffffff' : '#000000'
+    const selectedFg = theme.mode === 'dark' ? '#ffffff' : '#000000'
     const customSymbol = isMultiSelect
       ? isCustomSelected
         ? SYMBOLS.CHECKBOX_CHECKED

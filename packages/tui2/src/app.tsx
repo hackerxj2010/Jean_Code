@@ -66,8 +66,8 @@ export function App({
 
   const { component: logoComponent } = useLogo({
     availableWidth: terminalWidth,
-    blockColor: getLogoBlockColor(theme.name),
-    accentColor: getLogoAccentColor(theme.name),
+    blockColor: getLogoBlockColor(theme.mode),
+    accentColor: getLogoAccentColor(theme.mode),
   })
 
   const headerContent = useMemo(() => {

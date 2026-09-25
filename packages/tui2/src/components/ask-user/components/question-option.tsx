@@ -35,7 +35,7 @@ export const QuestionOption: React.FC<QuestionOptionProps> = memo(
     const label = typeof option === 'string' ? option : option.label
     const description = typeof option === 'object' ? option.description : undefined
 
-    const selectedFg = theme.name === 'dark' ? '#ffffff' : '#000000'
+    const selectedFg = theme.mode === 'dark' ? '#ffffff' : '#000000'
     const symbol = isMultiSelect
       ? isSelected ? SYMBOLS.CHECKBOX_CHECKED : SYMBOLS.CHECKBOX_UNCHECKED
       : isSelected ? SYMBOLS.SELECTED : SYMBOLS.UNSELECTED

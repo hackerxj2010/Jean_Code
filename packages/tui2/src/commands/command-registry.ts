@@ -6,6 +6,7 @@ import { buildInterviewPrompt, buildPlanPrompt, buildReviewPromptFromArgs } from
 import { handleConnectCommand, handleModelsCommand } from './providers'
 import { runBashCommand } from './router'
 import { useThemeStore } from '../hooks/use-theme'
+import { THEME_NAMES, isThemeName } from '../types/theme-system'
 import { useChatStore } from '../state/chat-store'
 import { AGENT_MODES } from '../utils/constants'
 import { getSystemMessage, getUserMessage } from '../utils/message-history'
@@ -407,12 +408,35 @@ const ALL_COMMANDS: CommandDefinition[] = [
       return { openReviewScreen: true }
     },
   }),
+  defineCommandWithArgs({
+    name: 'theme',
+    handler: (params, args) => {
+      const { theme, selectTheme } = useThemeStore.getState()
+      const requested = args.trim().toLowerCase()
+      let reply: string
+      if (!requested) {
+        reply = `Current theme: ${theme.name}. Available: ${THEME_NAMES.join(', ')}. Use /theme <name> to switch.`
+      } else if (isThemeName(requested)) {
+        selectTheme(requested)
+        reply = `Switched to ${requested} theme.`
+      } else {
+        reply = `Unknown theme "${requested}". Available: ${THEME_NAMES.join(', ')}.`
+      }
+      params.setMessages((prev) => [
+        ...prev,
+        getUserMessage(params.inputValue.trim()),
+        getSystemMessage(reply),
+      ])
+      params.saveToHistory(params.inputValue.trim())
+      clearInput(params)
+    },
+  }),
   defineCommand({
     name: 'theme:toggle',
     handler: (params) => {
-      const { theme, setThemeName } = useThemeStore.getState()
-      const newTheme = theme.name === 'dark' ? 'light' : 'dark'
-      setThemeName(newTheme)
+      const { theme, selectTheme } = useThemeStore.getState()
+      const newTheme = theme.mode === 'dark' ? 'light' : 'dark'
+      selectTheme(newTheme)
       params.setMessages((prev) => [
         ...prev,
         getUserMessage(params.inputValue.trim()),

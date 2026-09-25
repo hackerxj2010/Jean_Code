@@ -135,7 +135,9 @@ export const buildTheme = (
 
   // Final step: Resolve all 'default' values to actual colors
   resolveThemeColors(theme, mode)
-  theme.name = mode
+  // Overrides may not rename the theme or flip its mode.
+  theme.name = baseTheme.name
+  theme.mode = mode
 
   return theme
 }

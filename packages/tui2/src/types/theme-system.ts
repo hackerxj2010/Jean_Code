@@ -1,4 +1,16 @@
-export type ThemeName = 'dark' | 'light'
+/** Light or dark: what the system detects and what contrast choices key off. */
+export type ThemeMode = 'dark' | 'light'
+
+/**
+ * Every bundled theme. `dark` and `light` follow the system; the rest are
+ * picked explicitly (`/theme <name>`, `OPEN_TUI_THEME`, or `ui.theme`).
+ */
+export const THEME_NAMES = ['dark', 'light', 'dark-blue', 'dark-red', 'monokai'] as const
+
+export type ThemeName = (typeof THEME_NAMES)[number]
+
+export const isThemeName = (value: string): value is ThemeName =>
+  (THEME_NAMES as readonly string[]).includes(value)
 
 export type MarkdownHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6
 
@@ -25,8 +37,11 @@ export interface MarkdownThemeOverrides {
  * This makes theming easier and more intuitive
  */
 export interface ChatTheme {
-  /** Theme identifier ('dark' or 'light') */
+  /** Theme identifier */
   name: ThemeName
+
+  /** Whether the palette is meant for a dark or a light terminal */
+  mode: ThemeMode
   // ============================================================================
   // CORE SEMANTIC COLORS
   // ============================================================================

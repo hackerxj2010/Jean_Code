@@ -96,6 +96,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   ...MODE_COMMANDS,
   {
+    id: 'theme',
+    label: 'theme',
+    description: 'Pick a theme: dark, light, dark-blue, dark-red, monokai',
+  },
+  {
     id: 'theme:toggle',
     label: 'theme:toggle',
     description: 'Toggle between light and dark mode',

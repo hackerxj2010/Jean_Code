@@ -182,8 +182,8 @@ export const ProjectPickerScreen: React.FC<ProjectPickerScreenProps> = ({
   const shouldCenterContent = !isCompactMode && spaceAfterFilePicker > 10
 
   // Logo setup
-  const blockColor = getLogoBlockColor(theme.name)
-  const accentColor = getLogoAccentColor(theme.name)
+  const blockColor = getLogoBlockColor(theme.mode)
+  const accentColor = getLogoAccentColor(theme.mode)
   const { applySheenToChar } = useSheenAnimation({
     logoColor: theme.foreground,
     accentColor,

@@ -10,6 +10,7 @@ import type {
   ChatTheme,
   MarkdownHeadingLevel,
   MarkdownThemeOverrides,
+  ThemeMode,
   ThemeName,
 } from '../types/theme-system'
 
@@ -81,11 +82,11 @@ export function supportsTruecolor(env: CliEnv = getCliEnv()): boolean {
  * In light mode: black (#000000 or 'black')
  */
 export function getLogoBlockColor(
-  themeName: ThemeName,
+  mode: ThemeMode,
   env: CliEnv = getCliEnv(),
 ): string {
   const isTruecolor = supportsTruecolor(env)
-  if (themeName === 'dark') {
+  if (mode === 'dark') {
     return isTruecolor ? '#ffffff' : 'white'
   }
   return isTruecolor ? '#000000' : 'black'
@@ -96,12 +97,12 @@ export function getLogoBlockColor(
  * Returns the primary green color with appropriate fallback.
  */
 export function getLogoAccentColor(
-  themeName: ThemeName,
+  mode: ThemeMode,
   env: CliEnv = getCliEnv(),
 ): string {
   const isTruecolor = supportsTruecolor(env)
   // The primary green color - 'lime' is CSS bright green
-  if (themeName === 'dark') {
+  if (mode === 'dark') {
     return isTruecolor ? '#9EFC62' : 'lime'
   }
   return isTruecolor ? '#65A83E' : 'green'
@@ -161,7 +162,7 @@ const VS_CODE_PRODUCT_DIRS = [
 const normalizeThemeName = (themeName: string): string =>
   themeName.trim().toLowerCase()
 
-const inferThemeFromName = (themeName: string): ThemeName | null => {
+const inferThemeFromName = (themeName: string): ThemeMode | null => {
   const normalized = normalizeThemeName(themeName)
 
   for (const hint of IDE_THEME_INFERENCE.dark) {
@@ -321,7 +322,7 @@ const resolveZedSettingsPaths = (
   return paths
 }
 
-const extractVSCodeTheme = (content: string): ThemeName | null => {
+const extractVSCodeTheme = (content: string): ThemeMode | null => {
   // Try standard colorTheme setting
   const colorThemeMatch = content.match(
     /"workbench\.colorTheme"\s*:\s*"([^"]+)"/i,
@@ -359,7 +360,7 @@ const extractVSCodeTheme = (content: string): ThemeName | null => {
   return null
 }
 
-const extractJetBrainsTheme = (content: string): ThemeName | null => {
+const extractJetBrainsTheme = (content: string): ThemeMode | null => {
   // Check if autodetect is enabled (Sync with OS setting)
   const autodetectMatch = content.match(
     /<component[^>]+name="LafManager"[^>]+autodetect="(true|false)"/i,
@@ -432,7 +433,7 @@ const isZedTerminal = (
 
 const detectVSCodeTheme = (
   env: CliEnv = getCliEnv(),
-): ThemeName | null => {
+): ThemeMode | null => {
   if (!isVSCodeFamilyTerminal(env)) {
     return null
   }
@@ -470,7 +471,7 @@ const detectVSCodeTheme = (
 
 const detectJetBrainsTheme = (
   env: CliEnv = getCliEnv(),
-): ThemeName | null => {
+): ThemeMode | null => {
   if (!isJetBrainsTerminal(env)) {
     return null
   }
@@ -498,7 +499,7 @@ const detectJetBrainsTheme = (
   return null
 }
 
-const extractZedTheme = (content: string): ThemeName | null => {
+const extractZedTheme = (content: string): ThemeMode | null => {
   try {
     const sanitized = stripJsonStyleComments(content)
     const parsed = JSON.parse(sanitized) as Record<string, unknown>
@@ -575,7 +576,7 @@ const extractZedTheme = (content: string): ThemeName | null => {
 
 const detectZedTheme = (
   env: CliEnv = getCliEnv(),
-): ThemeName | null => {
+): ThemeMode | null => {
   if (!isZedTerminal(env)) {
     return null
   }
@@ -613,7 +614,7 @@ const detectZedTheme = (
 
 export const detectIDETheme = (
   env: CliEnv = getCliEnv(),
-): ThemeName | null => {
+): ThemeMode | null => {
   const theme = detectVSCodeTheme(env)
   if (theme) return theme
   
@@ -646,7 +647,7 @@ type ChatThemeOverrides = Partial<Omit<ChatTheme, 'markdown'>> & {
   markdown?: MarkdownThemeOverrides
 }
 
-type ThemeOverrideConfig = Partial<Record<ThemeName, ChatThemeOverrides>> & {
+type ThemeOverrideConfig = Partial<Record<ThemeMode, ChatThemeOverrides>> & {
   all?: ChatThemeOverrides
 }
 
@@ -705,16 +706,16 @@ const mergeTheme = (
 
 export const parseThemeOverrides = (
   raw: string,
-): Partial<Record<ThemeName, ChatThemeOverrides>> => {
+): Partial<Record<ThemeMode, ChatThemeOverrides>> => {
   try {
     const parsed = JSON.parse(raw) as ThemeOverrideConfig
     if (!parsed || typeof parsed !== 'object') return {}
 
-    const result: Partial<Record<ThemeName, ChatThemeOverrides>> = {}
+    const result: Partial<Record<ThemeMode, ChatThemeOverrides>> = {}
     const common =
       typeof parsed.all === 'object' && parsed.all ? parsed.all : undefined
 
-    for (const themeName of ['dark', 'light'] as ThemeName[]) {
+    for (const themeName of ['dark', 'light'] as ThemeMode[]) {
       const specific =
         typeof parsed?.[themeName] === 'object' && parsed?.[themeName]
           ? parsed?.[themeName]
@@ -781,7 +782,7 @@ const runSystemCommand = (command: string[]): string | null => {
  * Detect Windows PowerShell background color theme
  * Uses PowerShell's (Get-Host).UI.RawUI.BackgroundColor command
  */
-function detectWindowsPowerShellTheme(): ThemeName | null {
+function detectWindowsPowerShellTheme(): ThemeMode | null {
   if (process.platform !== 'win32') return null
 
   const bgColor = runSystemCommand([
@@ -824,11 +825,11 @@ function detectWindowsPowerShellTheme(): ThemeName | null {
   return null
 }
 
-export const detectTerminalOverrides = (): ThemeName | null => {
+export const detectTerminalOverrides = (): ThemeMode | null => {
   return null
 }
 
-export function detectPlatformTheme(): ThemeName {
+export function detectPlatformTheme(): ThemeMode {
   if (typeof Bun !== 'undefined') {
     if (process.platform === 'darwin') {
       const value = runSystemCommand([
@@ -875,6 +876,7 @@ export function detectPlatformTheme(): ThemeName {
 const DEFAULT_CHAT_THEMES: Record<ThemeName, ChatTheme> = {
   dark: {
     name: 'dark',
+    mode: 'dark',
     // Core semantic colors
     primary: '#9EFC62',
     secondary: '#a3aed0',
@@ -940,6 +942,7 @@ const DEFAULT_CHAT_THEMES: Record<ThemeName, ChatTheme> = {
   },
   light: {
     name: 'light',
+    mode: 'light',
     // Core semantic colors
     primary: '#65A83E',
     secondary: '#6b7280',
@@ -1003,12 +1006,206 @@ const DEFAULT_CHAT_THEMES: Record<ThemeName, ChatTheme> = {
       codeMonochrome: false,
     },
   },
+  'dark-blue': {
+    name: 'dark-blue',
+    mode: 'dark',
+    // Core semantic colors
+    primary: '#60A5FA',
+    secondary: '#93A8D0',
+    success: '#34D399',
+    error: '#F87171',
+    warning: '#FBBF24',
+    info: '#60A5FA',
+    link: '#7DD3FC',
+    directory: '#8FA3C7',
+
+    // Neutral scale
+    foreground: '#E2E8F0',
+    background: 'transparent',
+    muted: '#8B9BB8',
+    border: '#2D4A7A',
+    surface: '#0F1E3A',
+    surfaceHover: '#1B3160',
+
+    // Context-specific
+    aiLine: '#3B5998',
+    userLine: '#60A5FA',
+
+    // Agent backgrounds
+    agentToggleHeaderBg: '#2563EB',
+    agentToggleExpandedBg: '#1E3A8A',
+    agentFocusedBg: '#1B3160',
+    agentContentBg: '#0A1428',
+    inputFg: '#E2E8F0',
+    inputFocusedFg: '#FFFFFF',
+
+    // Mode toggles
+    modeFastBg: '#38BDF8',
+    modeFastText: '#38BDF8',
+    modeMaxBg: '#818CF8',
+    modeMaxText: '#818CF8',
+    modePlanBg: '#3B82F6',
+    modePlanText: '#3B82F6',
+
+    // Image card
+    imageCardBorder: '#2D4A7A',
+
+    // Markdown
+    markdown: {
+      codeBackground: '#132544',
+      codeHeaderFg: '#6B7FA8',
+      inlineCodeFg: '#7DD3FC',
+      codeTextFg: '#E2E8F0',
+      headingFg: {
+        1: '#93C5FD',
+        2: '#93C5FD',
+        3: '#93C5FD',
+        4: '#93C5FD',
+        5: '#93C5FD',
+        6: '#93C5FD',
+      },
+      listBulletFg: '#60A5FA',
+      blockquoteBorderFg: '#2D4A7A',
+      blockquoteTextFg: '#CBD5E1',
+      dividerFg: '#1E3358',
+      codeMonochrome: false,
+    },
+  },
+  'dark-red': {
+    name: 'dark-red',
+    mode: 'dark',
+    // Core semantic colors
+    primary: '#F87171',
+    secondary: '#C9A3A3',
+    success: '#4ADE80',
+    error: '#FF5555',
+    warning: '#FBBF24',
+    info: '#F87171',
+    link: '#FCA5A5',
+    directory: '#B89494',
+
+    // Neutral scale
+    foreground: '#F1E6E6',
+    background: 'transparent',
+    muted: '#B39A9A',
+    border: '#6B2A2A',
+    surface: '#2A1111',
+    surfaceHover: '#401A1A',
+
+    // Context-specific
+    aiLine: '#7F3B3B',
+    userLine: '#F87171',
+
+    // Agent backgrounds
+    agentToggleHeaderBg: '#DC2626',
+    agentToggleExpandedBg: '#7F1D1D',
+    agentFocusedBg: '#401A1A',
+    agentContentBg: '#1A0808',
+    inputFg: '#F1E6E6',
+    inputFocusedFg: '#FFFFFF',
+
+    // Mode toggles
+    modeFastBg: '#FB923C',
+    modeFastText: '#FB923C',
+    modeMaxBg: '#E11D48',
+    modeMaxText: '#E11D48',
+    modePlanBg: '#B91C1C',
+    modePlanText: '#B91C1C',
+
+    // Image card
+    imageCardBorder: '#6B2A2A',
+
+    // Markdown
+    markdown: {
+      codeBackground: '#341616',
+      codeHeaderFg: '#9A6B6B',
+      inlineCodeFg: '#FDA4AF',
+      codeTextFg: '#F1E6E6',
+      headingFg: {
+        1: '#FCA5A5',
+        2: '#FCA5A5',
+        3: '#FCA5A5',
+        4: '#FCA5A5',
+        5: '#FCA5A5',
+        6: '#FCA5A5',
+      },
+      listBulletFg: '#F87171',
+      blockquoteBorderFg: '#6B2A2A',
+      blockquoteTextFg: '#E5D0D0',
+      dividerFg: '#4A1D1D',
+      codeMonochrome: false,
+    },
+  },
+  // The classic Monokai palette: green, pink, orange, yellow, cyan, purple on
+  // a warm charcoal.
+  monokai: {
+    name: 'monokai',
+    mode: 'dark',
+    // Core semantic colors
+    primary: '#A6E22E',
+    secondary: '#AE81FF',
+    success: '#A6E22E',
+    error: '#F92672',
+    warning: '#FD971F',
+    info: '#66D9EF',
+    link: '#66D9EF',
+    directory: '#E6DB74',
+
+    // Neutral scale
+    foreground: '#F8F8F2',
+    background: 'transparent',
+    muted: '#90908A',
+    border: '#49483E',
+    surface: '#3E3D32',
+    surfaceHover: '#49483E',
+
+    // Context-specific
+    aiLine: '#75715E',
+    userLine: '#A6E22E',
+
+    // Agent backgrounds
+    agentToggleHeaderBg: '#FD971F',
+    agentToggleExpandedBg: '#AE81FF',
+    agentFocusedBg: '#3E3D32',
+    agentContentBg: '#272822',
+    inputFg: '#F8F8F2',
+    inputFocusedFg: '#FFFFFF',
+
+    // Mode toggles
+    modeFastBg: '#FD971F',
+    modeFastText: '#FD971F',
+    modeMaxBg: '#F92672',
+    modeMaxText: '#F92672',
+    modePlanBg: '#66D9EF',
+    modePlanText: '#66D9EF',
+
+    // Image card
+    imageCardBorder: '#75715E',
+
+    // Markdown
+    markdown: {
+      codeBackground: '#3E3D32',
+      codeHeaderFg: '#75715E',
+      inlineCodeFg: '#E6DB74',
+      codeTextFg: '#F8F8F2',
+      headingFg: {
+        1: '#F92672',
+        2: '#F92672',
+        3: '#F92672',
+        4: '#F92672',
+        5: '#F92672',
+        6: '#F92672',
+      },
+      listBulletFg: '#FD971F',
+      blockquoteBorderFg: '#75715E',
+      blockquoteTextFg: '#CFCFC2',
+      dividerFg: '#49483E',
+      codeMonochrome: false,
+    },
+  },
 }
 
-export const chatThemes = {
-  dark: DEFAULT_CHAT_THEMES.dark,
-  light: DEFAULT_CHAT_THEMES.light,
-}
+export const chatThemes: Record<ThemeName, ChatTheme> = DEFAULT_CHAT_THEMES
 
 export const createMarkdownPalette = (theme: ChatTheme): MarkdownPalette => {
   const headingDefaults: Record<MarkdownHeadingLevel, string> = {
@@ -1096,19 +1293,19 @@ export const resolveThemeColor = (
 // Debounce timing for file watcher events
 const FILE_WATCHER_DEBOUNCE_MS = 250
 
-let themeStoreUpdater: ((name: ThemeName) => void) | null = null
+let themeStoreUpdater: ((name: ThemeMode) => void) | null = null
 // OSC detections happen asynchronously and at most once.
 // We cache the resolved value so synchronous theme code can read it later
 // without triggering terminal I/O.
-let oscDetectedTheme: ThemeName | null = null
+let oscDetectedTheme: ThemeMode | null = null
 let pendingRecomputeTimer: NodeJS.Timeout | null = null
-let themeResolver: (() => ThemeName) | null = null
+let themeResolver: (() => ThemeMode) | null = null
 
-export const getOscDetectedTheme = (): ThemeName | null => oscDetectedTheme
-export const setOscDetectedTheme = (theme: ThemeName | null): void => {
+export const getOscDetectedTheme = (): ThemeMode | null => oscDetectedTheme
+export const setOscDetectedTheme = (theme: ThemeMode | null): void => {
   oscDetectedTheme = theme
 }
-export const setThemeResolver = (resolver: () => ThemeName) => {
+export const setThemeResolver = (resolver: () => ThemeMode) => {
   themeResolver = resolver
 }
 
@@ -1117,7 +1314,7 @@ export const setThemeResolver = (resolver: () => ThemeName) => {
  * Called by theme-store on initialization to enable reactive updates
  * @param setter - Function to call when theme changes
  */
-export const initializeThemeWatcher = (setter: (name: ThemeName) => void) => {
+export const initializeThemeWatcher = (setter: (name: ThemeMode) => void) => {
   themeStoreUpdater = setter
 }
 
@@ -1159,11 +1356,11 @@ const debouncedRecomputeSystemTheme = () => {
   }, FILE_WATCHER_DEBOUNCE_MS)
 }
 
-let lastDetectedTheme: ThemeName | null = null
-export function setLastDetectedTheme(theme: ThemeName) {
+let lastDetectedTheme: ThemeMode | null = null
+export function setLastDetectedTheme(theme: ThemeMode) {
   lastDetectedTheme = theme
 }
-export function getLastDetectedTheme(): ThemeName | null {
+export function getLastDetectedTheme(): ThemeMode | null {
   return lastDetectedTheme
 }
 

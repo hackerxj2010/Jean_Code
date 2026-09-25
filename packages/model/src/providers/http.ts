@@ -131,10 +131,14 @@ function describeFailure(provider: string, status: number, body: string): string
     // Not JSON; the raw body is the best we have.
   }
 
+  // A 403 is not always a bad key: the key can be valid but barred from this
+  // model, plan, or client (a free tier reserved for the provider's own app).
   const hint =
-    status === 401 || status === 403
+    status === 401
       ? ' — check the API key for this provider'
-      : status === 404
+      : status === 403
+        ? ' — the provider refused this request; check the key, and that your plan allows this model from third-party clients'
+        : status === 404
         ? ' — check the model id exists on this provider'
         : status === 429
           ? ' — rate limited'
