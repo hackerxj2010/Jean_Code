@@ -45,15 +45,17 @@ export function buildBashHistoryMessages(params: {
   assistantMessage: ChatMessage
   toolCallId: string
 } {
-  const { command, cwd, output = '...', isComplete = false } = params
+  const { command, cwd, output, isComplete = false } = params
   const toolCallId = params.toolCallId ?? crypto.randomUUID()
 
+  // No output yet means still running; the card shows it that way rather than
+  // as a finished command that printed a placeholder.
   const toolBlock: ContentBlock = {
     type: 'tool',
     toolName: 'run_terminal_command',
     toolCallId,
     input: { command },
-    output,
+    ...(output !== undefined && { output }),
   }
 
   const assistantMessage: ChatMessage = {

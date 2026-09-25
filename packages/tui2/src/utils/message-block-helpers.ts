@@ -610,7 +610,8 @@ export const updateToolBlockWithOutput = (
       } else {
         output = formatToolOutput(toolOutput)
       }
-      return { ...block, output }
+      // `output` is clamped text; the cards read structure from the original.
+      return { ...block, output, outputRaw: toolOutput }
     } else if (block.type === 'agent' && block.blocks) {
       const updatedBlocks = updateToolBlockWithOutput(block.blocks, options)
       // Avoid creating new block if nested blocks didn't change

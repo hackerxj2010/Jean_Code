@@ -1,41 +1,14 @@
-import { CodeSearchComponent } from './code-search'
-import { GlobComponent } from './glob'
-import { ReadFilesComponent } from './read-files'
-import { ReadURLComponent } from './read-url'
-import { WebSearchComponent } from './web-search'
-import { RunTerminalCommandComponent } from './run-terminal-command'
-import { SkillComponent } from './skill'
-import { StrReplaceComponent } from './str-replace'
-import { WriteFileComponent } from './write-file'
-import { WriteTodosComponent } from './write-todos'
-
-import type {
-  ToolComponent,
-  ToolRenderConfig,
-  ToolRenderOptions,
-  ToolBlock,
-} from './types'
-import type { ChatTheme } from '../../types/theme-system'
 import type { ToolName } from '@codebuff/sdk'
+import type { ChatTheme } from '../../types/theme-system'
+import type { ToolBlock, ToolComponent, ToolRenderConfig, ToolRenderOptions } from './types'
 
 /**
- * Registry of all tool-specific UI components.
- * Add new tool components here to make them available in the CLI.
+ * Renderers registered by plugins or extensions.
+ *
+ * Every built-in tool is drawn by the tool card (`tool-specs.tsx`); an entry
+ * here replaces that card for one tool name.
  */
-// Only tools Jean has, under the names `compat/tool-names.ts` gives them;
-// any other tool gets the generic card.
-const toolComponentRegistry = new Map<ToolName, ToolComponent>([
-  [CodeSearchComponent.toolName, CodeSearchComponent],
-  [GlobComponent.toolName, GlobComponent],
-  [RunTerminalCommandComponent.toolName, RunTerminalCommandComponent],
-  [ReadFilesComponent.toolName, ReadFilesComponent],
-  [ReadURLComponent.toolName, ReadURLComponent],
-  [WebSearchComponent.toolName, WebSearchComponent],
-  [WriteTodosComponent.toolName, WriteTodosComponent],
-  [StrReplaceComponent.toolName, StrReplaceComponent],
-  [WriteFileComponent.toolName, WriteFileComponent],
-  [SkillComponent.toolName, SkillComponent],
-])
+const toolComponentRegistry = new Map<ToolName, ToolComponent>()
 
 /**
  * Register a new tool component.
@@ -53,27 +26,26 @@ export function registerToolComponent(component: ToolComponent): void {
  * @param toolName - The name of the tool
  * @returns The tool component, or undefined if not registered
  */
-export function getToolComponent(
-  toolName: ToolName,
-): ToolComponent | undefined {
+export function getToolComponent(toolName: ToolName): ToolComponent | undefined {
   return toolComponentRegistry.get(toolName)
 }
 
 /**
- * Render a tool using its registered component, or return null for default rendering.
- * This is the main entry point for the tool rendering system.
+ * Render a tool with a registered override, or return undefined so the
+ * built-in tool card draws it.
  *
  * @param toolBlock - The tool block to render
  * @param theme - The current chat theme
  * @param options - Rendering options
- * @returns Render configuration, or null to use default rendering
  */
 export function renderToolComponent(
   toolBlock: ToolBlock,
   theme: ChatTheme,
   options: ToolRenderOptions,
 ): ToolRenderConfig | undefined {
-  const component = getToolComponent(toolBlock.toolName)
+  const component =
+    getToolComponent(toolBlock.toolName) ??
+    (toolBlock.sourceToolName ? getToolComponent(toolBlock.sourceToolName as ToolName) : undefined)
 
   if (component === undefined) {
     return undefined
@@ -82,10 +54,7 @@ export function renderToolComponent(
   try {
     return component.render(toolBlock as any, theme, options)
   } catch (error) {
-    console.error(
-      `Error rendering tool component for ${toolBlock.toolName}:`,
-      error,
-    )
+    console.error(`Error rendering tool component for ${toolBlock.toolName}:`, error)
     return undefined
   }
 }

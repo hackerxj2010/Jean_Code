@@ -38,6 +38,8 @@ export type ToolContentBlock = {
   type: 'tool'
   toolCallId: string
   toolName: ToolName
+  /** Jean's own name for the tool; `toolName` is the interface's. */
+  sourceToolName?: string
   input: any
   output?: string
   outputRaw?: unknown

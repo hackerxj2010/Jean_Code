@@ -3,6 +3,7 @@
  * Handles message tree building, pagination, and collapse state management.
  */
 
+import { isToolCollapsedByDefault } from '../components/tools/tool-specs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setAllBlocksCollapsedState, hasAnyExpandedBlocks } from '../utils/collapse-helpers'
@@ -138,7 +139,8 @@ export function useChatMessages({
               // Handle tool blocks
               if (block.type === 'tool' && block.toolCallId === id) {
                 foundTarget = true
-                const wasCollapsed = block.isCollapsed ?? false
+                // The card's own default, so the first click always flips it.
+                const wasCollapsed = block.isCollapsed ?? isToolCollapsedByDefault(block)
                 return {
                   ...block,
                   isCollapsed: !wasCollapsed,

@@ -298,6 +298,7 @@ const handleRegularToolCall = (
     type: 'tool',
     toolCallId: event.toolCallId,
     toolName: event.toolName as ToolName,
+    ...(event.sourceToolName !== undefined && { sourceToolName: event.sourceToolName }),
     input: event.input,
     agentId: event.agentId,
     ...(event.includeToolCall !== undefined && {

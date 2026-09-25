@@ -68,7 +68,7 @@ export function adaptInput(
         command:
           typeof input.command === 'string' && input.command !== ''
             ? input.command
-            : `background job ${String(input.id ?? '')}`.trim(),
+            : `background job ${String(input.job ?? input.id ?? '')}`.trim(),
       }
 
     case 'read':
@@ -132,18 +132,30 @@ export function adaptOutput(
             ...(isRecord(typed.display) && typeof typed.display.cwd === 'string'
               ? { startingCwd: typed.display.cwd }
               : {}),
+            // The card shows how the command ended, not just what it printed.
+            ...(isRecord(typed.display) && typeof typed.display.exitCode === 'number'
+              ? { exitCode: typed.display.exitCode }
+              : {}),
+            ...(isRecord(typed.display) && typed.display.timedOut === true
+              ? { timedOut: true }
+              : {}),
           },
         },
       ]
 
     default:
-      // Everything else: the structured payload when a tool provides one,
-      // otherwise the text. `display` exists precisely so a tool can hand the
-      // interface something richer than its model-facing summary.
+      // Everything else: the structured payload a tool provides, *plus* its
+      // text. `display` is often only counts (`{ kind, count }`) while the
+      // readable answer lives in `output`, so dropping either leaves the card
+      // with nothing a person can read.
       return [
         {
           type: 'json',
-          value: typed.display ?? { output: text, isError: typed.isError === true },
+          value: {
+            ...(isRecord(typed.display) ? typed.display : {}),
+            output: text,
+            isError: typed.isError === true,
+          },
         },
       ]
   }

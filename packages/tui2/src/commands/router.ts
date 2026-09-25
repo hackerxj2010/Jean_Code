@@ -64,7 +64,6 @@ export function runBashCommand(command: string) {
       command,
       cwd: commandCwd,
       toolCallId: id,
-      output: '...',
     })
     setMessages((prev) => [...prev, assistantMessage])
   }

@@ -64,10 +64,24 @@ describe('tool results', () => {
     expect(part?.value).toMatchObject({ stdout: 'boom', errorMessage: 'boom' })
   })
 
-  test('prefers a tool’s structured display payload', () => {
+  test('keeps a tool’s display payload and its readable text together', () => {
     const display = { kind: 'edit', path: 'a.ts' }
     const [part] = adaptOutput('edit', { output: 'Applied 1 hunk', display })
-    expect(part?.value).toBe(display)
+    expect(part?.value).toEqual({
+      kind: 'edit',
+      path: 'a.ts',
+      output: 'Applied 1 hunk',
+      isError: false,
+    })
+  })
+
+  test('carries the exit code so the terminal card can show it', () => {
+    const [part] = adaptOutput('bash', {
+      output: 'nope',
+      isError: true,
+      display: { kind: 'bash', command: 'false', exitCode: 1 },
+    })
+    expect(part?.value).toMatchObject({ exitCode: 1, errorMessage: 'nope' })
   })
 
   test('falls back to the text when there is no display payload', () => {

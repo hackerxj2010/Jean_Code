@@ -69,6 +69,8 @@ export interface PrintModeToolCall {
   type: 'tool_call'
   toolCallId: string
   toolName: ToolName
+  /** Jean's own name for the tool, before `renameTool` mapped it. */
+  sourceToolName?: string
   input: Record<string, unknown> | undefined
   /** Set when the call came from a sub-agent. */
   agentId?: string

@@ -184,6 +184,7 @@ export class JeanClient {
             type: 'tool_call',
             toolCallId: event.id,
             toolName: renameTool(event.name),
+            sourceToolName: event.name,
             input: adaptInput(
               event.name,
               event.input as Record<string, unknown> | undefined,
