@@ -3,7 +3,7 @@ import { coreutilsShimDir, Native, nativeReady } from '@jean/native'
 import { nativeCommandLines, nativeKillTree } from './accelerate.ts'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { platform, tmpdir } from 'node:os'
-import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { delimiter, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path'
 import type { Tool, ToolContext, ToolResult } from './types.ts'
 import { ToolError } from './types.ts'
 
@@ -41,11 +41,55 @@ function withCoreutils(context: ToolContext): void {
 export function defaultShell(): { path: string; args: string[] } {
   if (platform() === 'win32') {
     // Git Bash ships with Git for Windows and is what most Windows dev
-    // workflows already assume; fall back to PowerShell if it is missing.
-    const bash = process.env.SHELL ?? 'bash'
-    return { path: bash, args: ['-c'] }
+    // workflows already assume. When none is found, spawning fails and the
+    // embedded shell takes over (see `missingShells`).
+    windowsBash ??= findWindowsBash(process.env, existsSync)
+    return { path: windowsBash, args: ['-c'] }
   }
   return { path: process.env.SHELL ?? '/bin/bash', args: ['-c'] }
+}
+
+let windowsBash: string | undefined
+
+/**
+ * Git Bash on Windows, wherever Git for Windows put it.
+ *
+ * `bash` alone is not enough: Git's installer puts only its `cmd` folder on
+ * PATH by default, so `bash` is not found and every command failed with
+ * ENOENT — `cd` never stuck, because nothing ran. And a `bash.exe` in
+ * System32 is WSL's, which runs a Linux filesystem and cannot use this
+ * process's paths, so it is skipped.
+ */
+export function findWindowsBash(
+  env: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean,
+): string {
+  if (env.SHELL) return env.SHELL
+
+  const pathDirs = (env.PATH ?? env.Path ?? '').split(';').filter(Boolean)
+  const candidates: string[] = []
+
+  // Beside the `git` on PATH: `<Git>\cmd\git.exe` → `<Git>\bin\bash.exe`.
+  for (const dir of pathDirs) {
+    if (!exists(win32.join(dir, 'git.exe'))) continue
+    let root = dir
+    for (const sub of ['cmd', 'bin', win32.join('mingw64', 'bin')]) {
+      if (dir.toLowerCase().endsWith(`\\${sub.toLowerCase()}`)) root = dir.slice(0, -sub.length - 1)
+    }
+    candidates.push(win32.join(root, 'bin', 'bash.exe'))
+  }
+
+  for (const base of [env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432]) {
+    if (base) candidates.push(win32.join(base, 'Git', 'bin', 'bash.exe'))
+  }
+  if (env.LOCALAPPDATA) candidates.push(win32.join(env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'))
+
+  for (const dir of pathDirs) {
+    if (/\\system32$/i.test(dir.replace(/\\+$/, ''))) continue
+    candidates.push(win32.join(dir, 'bash.exe'))
+  }
+
+  return candidates.find((candidate) => exists(candidate)) ?? 'bash'
 }
 
 /**

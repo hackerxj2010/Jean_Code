@@ -50,6 +50,7 @@ export {
   bashTool,
   classifyCommand,
   defaultShell,
+  findWindowsBash,
   clipOutput,
   isSpilledOutput,
   OutputBuffer,

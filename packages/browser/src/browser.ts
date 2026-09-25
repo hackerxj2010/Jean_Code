@@ -144,6 +144,10 @@ export class Browser {
       '--disable-extensions',
     ]
     if (this.options.headless !== false) args.push('--headless=new')
+    // Chrome will not start its sandbox as root ("Running as root without
+    // --no-sandbox is not supported"), which is how Docker and most CI run.
+    // Only then is it turned off; everywhere else the sandbox stays.
+    if (process.platform === 'linux' && process.getuid?.() === 0) args.push('--no-sandbox')
 
     const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     this.process = child

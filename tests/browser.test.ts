@@ -6,8 +6,10 @@ import { Browser, CdpConnection, CdpError, findChrome } from '../packages/browse
  * failures worth catching — correlation, timeouts, a socket closing mid-request
  * — only happen over a real socket.
  *
- * The browser tests need Chrome. Where it is absent they return rather than
- * fail: a test that reports the environment is not a test.
+ * The browser tests need Chrome. Where it is absent the block is *skipped*,
+ * so the runner reports it rather than counting it as passed; where Chrome is
+ * present but will not start, they fail. They load a page served here, not a
+ * site on the internet, so they do not depend on the network either.
  */
 
 interface StubServer {
@@ -230,15 +232,28 @@ describe('Chrome detection', () => {
  * Live tests. One browser is shared: launching Chrome costs about a second, and
  * paying that per test would make the suite unpleasant to run.
  */
-describe('driving a real browser', () => {
-  const available = Boolean(findChrome())
+const chromeAvailable = Boolean(findChrome())
+
+/** The page every live test drives, served locally. */
+const FIXTURE_HTML =
+  '<!doctype html><html><head><title>Example Domain</title></head>' +
+  '<body><h1>Example Domain</h1><p>A page served by the test.</p></body></html>'
+
+describe.skipIf(!chromeAvailable)('driving a real browser', () => {
   let shared: Browser | undefined
+  let startError: unknown
+  let server: ReturnType<typeof Bun.serve> | undefined
+  let origin = ''
 
   // Launching happens once, here, rather than inside the first test. A cold
   // Chrome start on Windows can take several seconds, and charging that to
   // whichever test ran first made the suite fail depending on ordering.
   beforeAll(async () => {
-    if (!available) return
+    server = Bun.serve({
+      port: 0,
+      fetch: () => new Response(FIXTURE_HTML, { headers: { 'content-type': 'text/html' } }),
+    })
+    origin = `http://127.0.0.1:${server.port}`
     const browser = new Browser({ headless: true })
     try {
       await browser.start()
@@ -246,32 +261,34 @@ describe('driving a real browser', () => {
       // makes every later test fail with "the browser is not started" instead
       // of reporting the launch failure.
       shared = browser
-    } catch {
+    } catch (error) {
+      startError = error
       await browser.stop().catch(() => {})
     }
   }, 60_000)
 
-  function page(): Browser | undefined {
+  /** The shared browser. Chrome was found, so failing to start is a failure. */
+  function page(): Browser {
+    if (!shared) throw new Error(`Chrome was found but did not start: ${String(startError)}`)
     return shared
   }
 
   afterAll(async () => {
     await shared?.stop()
+    server?.stop(true)
   }, 30_000)
 
   test('navigates and reads the page', async () => {
     const browser = page()
-    if (!browser) return
 
-    await browser.goto('https://example.com')
+    await browser.goto(`${origin}/`)
     expect(await browser.title()).toBe('Example Domain')
-    expect(await browser.url()).toContain('example.com')
+    expect(await browser.url()).toContain('127.0.0.1')
     expect(await browser.text()).toContain('Example Domain')
   }, 30_000)
 
   test('evaluates in the page', async () => {
     const browser = page()
-    if (!browser) return
 
     expect(await browser.evaluate<number>('1 + 1')).toBe(2)
     expect(await browser.evaluate<string>('document.querySelector("h1").textContent')).toBe(
@@ -281,23 +298,20 @@ describe('driving a real browser', () => {
 
   test('reports an expression that throws', async () => {
     const browser = page()
-    if (!browser) return
 
     await expect(browser.evaluate('throw new Error("deliberate")')).rejects.toThrow(/deliberate/)
   }, 30_000)
 
   test('records network requests', async () => {
     const browser = page()
-    if (!browser) return
 
     browser.clearLogs()
-    await browser.goto('https://example.com')
+    await browser.goto(`${origin}/`)
     expect(browser.networkRequests().length).toBeGreaterThan(0)
   }, 30_000)
 
   test('captures console output', async () => {
     const browser = page()
-    if (!browser) return
 
     browser.clearLogs()
     await browser.evaluate('console.error("a deliberate error")')
@@ -309,7 +323,6 @@ describe('driving a real browser', () => {
 
   test('reports a missing selector rather than silently doing nothing', async () => {
     const browser = page()
-    if (!browser) return
 
     await expect(browser.click('#does-not-exist')).rejects.toThrow(/no element matches/)
     await expect(browser.waitForSelector('#never-appears', 500)).rejects.toThrow(/did not appear/)
@@ -317,7 +330,6 @@ describe('driving a real browser', () => {
 
   test('takes a screenshot', async () => {
     const browser = page()
-    if (!browser) return
 
     const data = await browser.screenshot()
     // A PNG in base64 always begins with the same header bytes.

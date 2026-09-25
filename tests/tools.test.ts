@@ -18,6 +18,7 @@ import {
   classifyCommand,
   clipOutput,
   createSessionState,
+  findWindowsBash,
   globToRegExp,
   isSecretFile,
   isSpilledOutput,
@@ -278,10 +279,14 @@ describe('safety boundaries', () => {
         throw new Error('bad rule')
       },
     }
-    const result = await registry().call('read', { path: 'a.txt' }, {
-      ...context(dir, { permissionMode: 'full' }),
-      policy: broken as never,
-    })
+    const result = await registry().call(
+      'read',
+      { path: 'a.txt' },
+      {
+        ...context(dir, { permissionMode: 'full' }),
+        policy: broken as never,
+      },
+    )
     expect(result.isError).toBe(true)
     expect(result.output).toContain('permission rules could not be checked')
   })
@@ -760,5 +765,36 @@ describe('command output clipping', () => {
     expect(text.startsWith('HEAD-')).toBe(true)
     expect(text.endsWith('-TAIL')).toBe(true)
     expect(text).toContain('characters dropped')
+  })
+})
+
+describe('finding Git Bash on Windows', () => {
+  const files = (...paths: string[]) => {
+    const set = new Set(paths.map((p) => p.toLowerCase()))
+    return (path: string) => set.has(path.toLowerCase())
+  }
+
+  test('beside the git on PATH, even when its bin folder is not on PATH', () => {
+    const exists = files('C:\\Tools\\Git\\cmd\\git.exe', 'C:\\Tools\\Git\\bin\\bash.exe')
+    expect(findWindowsBash({ PATH: 'C:\\Windows\\System32;C:\\Tools\\Git\\cmd' }, exists)).toBe(
+      'C:\\Tools\\Git\\bin\\bash.exe',
+    )
+  })
+
+  test('in the standard install folder', () => {
+    const exists = files('C:\\Program Files\\Git\\bin\\bash.exe')
+    expect(findWindowsBash({ PATH: '', ProgramFiles: 'C:\\Program Files' }, exists)).toBe(
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+    )
+  })
+
+  test('never WSL’s bash in System32', () => {
+    const exists = files('C:\\Windows\\System32\\bash.exe')
+    expect(findWindowsBash({ PATH: 'C:\\Windows\\System32' }, exists)).toBe('bash')
+  })
+
+  test('SHELL wins when it is set', () => {
+    const shell = 'D:\\msys64\\usr\\bin\\bash.exe'
+    expect(findWindowsBash({ SHELL: shell }, () => false)).toBe(shell)
   })
 })

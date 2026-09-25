@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "bun --cwd packages/cli dev",
     "jean": "bun packages/cli/src/index.ts",
-    "build": "turbo run build",
+    "build": "tsc --build",
     "build:native": "cargo build --release -p pi-natives && cargo build --profile ffi -p pi-ffi",
     "typecheck": "tsc --build",
     "test": "bun test",
