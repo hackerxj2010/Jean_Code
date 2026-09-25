@@ -246,6 +246,33 @@ describe('importing other agents’ config', () => {
   })
 })
 
+describe('model as a string', () => {
+  test('`model` as "provider:model" is read as the model, not dropped', () => {
+    const { value, warnings } = validate({ model: 'openrouter:minimax/minimax-m3:free' })
+    expect(value.model).toEqual({ provider: 'openrouter', modelId: 'minimax/minimax-m3:free' })
+    expect(warnings).toHaveLength(0)
+  })
+
+  test('`model` as a bare id keeps the configured provider', () => {
+    expect(validate({ model: 'claude-sonnet-5' }).value.model).toEqual({ modelId: 'claude-sonnet-5' })
+  })
+
+  test('`model` of the wrong type is still refused', () => {
+    const { value, warnings } = validate({ model: 42 })
+    expect(value.model).toBeUndefined()
+    expect(warnings[0]).toContain('model')
+  })
+
+  test('what `jean config set model …` writes loads back as that model', () => {
+    const dir = workspace()
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ model: 'groq:llama-4-scout' }))
+    const { config, warnings } = loadConfig({ cwd: dir, skipImport: true, env: { JEAN_HOME: dir } })
+    expect(warnings.filter((w) => w.includes('model'))).toEqual([])
+    expect(config.model.provider).toBe('groq')
+    expect(config.model.modelId).toBe('llama-4-scout')
+  })
+})
+
 describe('loading', () => {
   test('project config overrides the defaults', () => {
     const dir = workspace()

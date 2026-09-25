@@ -185,7 +185,17 @@ export function validate(raw: unknown, path = '<config>'): ParseResult {
     else warnings.push(`${path}: \`maxTurns\` must be a positive integer — ignoring`)
   }
 
-  objectField('model')
+  // `"model": "provider:model"` is what `jean config set model …` writes and
+  // what people type by hand; read it as the object it stands for rather
+  // than drop it with a warning.
+  if (typeof obj.model === 'string' && obj.model.trim() !== '') {
+    const split = splitModelRef(obj.model.trim())
+    out.model = split.provider
+      ? { provider: split.provider, modelId: split.modelId }
+      : { modelId: split.modelId }
+  } else {
+    objectField('model')
+  }
   objectField('providers')
   objectField('shell')
   objectField('lsp')
