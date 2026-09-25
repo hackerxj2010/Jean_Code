@@ -50,6 +50,7 @@
         "@jean/memory": "workspace:*",
         "@jean/model": "workspace:*",
         "@jean/native": "workspace:*",
+        "@jean/plugins": "workspace:*",
         "@jean/readers": "workspace:*",
         "@jean/review": "workspace:*",
         "@jean/runtime": "workspace:*",
@@ -74,6 +75,7 @@
         "jean": "./src/index.ts",
       },
       "dependencies": {
+        "@jean/acp": "workspace:*",
         "@jean/advisor": "workspace:*",
         "@jean/agent": "workspace:*",
         "@jean/codemap": "workspace:*",

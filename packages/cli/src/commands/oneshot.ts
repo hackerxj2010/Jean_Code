@@ -1,6 +1,6 @@
 import type { JeanConfig } from '@jean/config'
 import { Orchestrator } from '@jean/agent'
-import { EventStore, newSessionId, type LoopResult } from '@jean/core'
+import { EventStore, newSessionId } from '@jean/core'
 import { defaultStreamRules, ModelClient, providerEnv } from '@jean/model'
 import { openMemory } from '@jean/memory'
 import { Renderer } from '../render.ts'

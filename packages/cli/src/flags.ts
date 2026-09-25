@@ -118,7 +118,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return {
-    command: positional[0],
+    command: positional[0] === undefined ? undefined : (COMMAND_ALIASES[positional[0]] ?? positional[0]),
     positional: positional.slice(1),
     flags,
     unknown,
@@ -187,7 +187,7 @@ export const COMMANDS: { name: string; args?: string; description: string }[] = 
   { name: 'skills', description: 'List available skills' },
   { name: 'plugins', args: '[list|enable|disable] [name]', description: 'Installed plugins; enable or disable one' },
   { name: 'search', args: '<query>', description: 'Search the web from the command line' },
-  { name: 'index', description: 'Build the repository code map and summarize it' },
+  { name: 'index', description: 'Build the repository code map and summarize it (alias: codemap)' },
   { name: 'scan', args: '[path]', description: 'Scan for leaked secrets and unsafe patterns' },
   { name: 'eval', args: '[tag] [--list] [--verbose]', description: 'Run the evaluation suite against the model' },
   { name: 'schedule', args: '[list|add|remove|enable|disable|run]', description: 'Manage scheduled runs' },
@@ -204,12 +204,23 @@ export const COMMANDS: { name: string; args?: string; description: string }[] = 
   { name: 'doctor', description: 'Diagnose configuration and connectivity' },
   { name: 'native', args: '[status|build|test]', description: 'The Rust core: status, build it, or test every crate' },
   { name: 'lsp', args: '[status|servers|install|check]', description: 'Language servers: which are ready, install one, check files' },
-  { name: 'debug', args: '[adapters|install]', description: 'Debug adapters: which are ready, install one' },
+  { name: 'debug', args: '[adapters|install]', description: 'Debug adapters: which are ready, install one (alias: dap)' },
   { name: 'voice', args: '[devices|record [seconds]]', description: 'Record from the microphone and transcribe it' },
   { name: 'setup', args: '[all|native|debuggers|lsp|check]', description: 'Install everything Jean runs on: the Rust core, debuggers, language servers' },
   { name: 'completions', args: '<bash|zsh|fish>', description: 'Print a shell completion script' },
   { name: 'version', description: 'Print the version' },
 ]
+
+/**
+ * Other names for commands, matching what the agent's tools are called
+ * (`debug_*` is the DAP tool family, `codemap_*` the index). Without these,
+ * `jean dap status` is not a command, so the whole line goes to the model
+ * as a prompt and waits on it.
+ */
+export const COMMAND_ALIASES: Record<string, string> = {
+  dap: 'debug',
+  codemap: 'index',
+}
 
 export function renderHelp(): string {
   const lines: string[] = [
