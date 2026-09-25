@@ -24,7 +24,10 @@ import { color, errorLine, line, symbols } from './ui.ts'
  * No command re-reads config files or the environment on its own.
  */
 
-const VERSION = '0.1.0'
+// A release build replaces this with the tag it was built from
+// (`bun build --define JEAN_BUILD_VERSION=...`); from source it is undefined.
+declare const JEAN_BUILD_VERSION: string | undefined
+const VERSION = typeof JEAN_BUILD_VERSION === 'string' ? JEAN_BUILD_VERSION : '0.1.0'
 
 async function main(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
@@ -391,6 +394,15 @@ const invokedDirectly =
     import.meta.main === true)
 
 if (invokedDirectly) {
+  // `jean skills | head` closes the pipe early. That is the reader being done,
+  // not a failure: stop quietly instead of printing an EPIPE stack trace.
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EPIPE') process.exit(0)
+      throw error
+    })
+  }
+
   main(process.argv.slice(2))
     .then((code) => {
       process.exitCode = code

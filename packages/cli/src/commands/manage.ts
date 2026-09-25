@@ -152,6 +152,9 @@ export async function checkoutPullRequest(positional: string[], cwd: string): Pr
   return summary
 }
 
+/** Where the installers are served from. */
+const INSTALLER_URL = 'https://raw.githubusercontent.com/hackerxj2010/Jean_Code/main'
+
 /**
  * `jean upgrade`: the checkout Jean runs from, brought up to date — a
  * fast-forward pull, then its dependencies and native core rebuilt.
@@ -160,6 +163,20 @@ export async function checkoutPullRequest(positional: string[], cwd: string): Pr
  * working on Jean, and their work comes before an update.
  */
 export async function runUpgradeCommand(flags: Flags): Promise<number> {
+  // A compiled release has no checkout to pull: it was installed from npm or
+  // a release download, and is updated the same way.
+  if (/[$]bunfs|~BUN/.test(import.meta.dir)) {
+    const fromNpm = /[\\/]node_modules[\\/]/.test(process.execPath)
+    line(
+      fromNpm
+        ? `Installed with npm. Update with:\n  npm install -g jean-code@latest`
+        : process.platform === 'win32'
+          ? `Update by running the installer again:\n  irm ${INSTALLER_URL}/install.ps1 | iex`
+          : `Update by running the installer again:\n  curl -fsSL ${INSTALLER_URL}/install.sh | sh`,
+    )
+    return 0
+  }
+
   const root = join(import.meta.dir, '..', '..', '..', '..')
   const git = (args: string[]) => Bun.spawnSync(['git', '-C', root, ...args], { stdout: 'pipe', stderr: 'pipe' })
 

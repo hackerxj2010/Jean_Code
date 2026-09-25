@@ -177,7 +177,10 @@ export type NativeMethod = (typeof NATIVE_METHODS)[number]
 /** The repository root this package lives in: `packages/native/src` → `../../..`. */
 export function packageRoot(): string | undefined {
   try {
-    return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+    // Only a real checkout. In a compiled release `import.meta.url` is inside
+    // the executable and this resolves to `/`, which every path "starts with".
+    return existsSync(join(root, 'Cargo.toml')) ? root : undefined
   } catch {
     return undefined
   }

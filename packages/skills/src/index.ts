@@ -96,11 +96,15 @@ function unquote(value: string): string {
 /**
  * The `skills/` directory that ships with Jean Code.
  *
- * Resolved from this module's own location so it works from a source checkout,
- * a global install, or a bundle.
+ * Resolved from this module's own location in a source checkout; in a
+ * compiled release, from the `skills/` folder shipped beside the executable.
  */
 export function builtinSkillsDir(): string {
-  return join(import.meta.dir, '..', '..', '..', 'skills')
+  const fromSource = join(import.meta.dir, '..', '..', '..', 'skills')
+  if (existsSync(fromSource)) return fromSource
+  // A compiled single-file build has no source tree: `import.meta.dir` is
+  // inside the executable. Releases ship `skills/` beside the binary.
+  return join(dirname(process.execPath), 'skills')
 }
 
 /** Reads one SKILL.md. */
